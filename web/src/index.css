@@ -1,0 +1,39 @@
+body {
+  margin: 0;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen',
+    'Ubuntu', 'Cantarell', 'Fira Sans', 'Droid Sans', 'Helvetica Neue',
+    sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+code {
+  font-family: source-code-pro, Menlo, Monaco, Consolas, 'Courier New',
+    monospace;
+}
+
+.dashboard-layout {
+  min-height: 100vh;
+}
+
+.dashboard-content {
+  padding: 24px;
+  background: #f0f2f5;
+  min-height: calc(100vh - 64px);
+}
+
+.status-card {
+  margin-bottom: 16px;
+}
+
+.device-status-good {
+  color: #52c41a;
+}
+
+.device-status-error {
+  color: #ff4d4f;
+}
+
+.device-status-warning {
+  color: #faad14;
+}

@@ -1,0 +1,54 @@
+[package]
+name = "ava-device-logger"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+# Web framework and async runtime
+tokio = { version = "1.0", features = ["full"] }
+axum = "0.7"
+tower = "0.4"
+tower-http = { version = "0.5", features = ["fs", "cors"] }
+hyper = "1.0"
+
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+toml = "0.8"
+
+# Modbus support
+tokio-modbus = "0.8"
+tokio-serial = "5.4"
+
+# IEC104 support (we'll implement basic support)
+bytes = "1.0"
+nom = "7.0"
+
+# Socket.IO
+socketioxide = "0.10"
+
+# Configuration and logging
+config = "0.14"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+thiserror = "1.0"
+anyhow = "1.0"
+
+# Database for logging
+rusqlite = { version = "0.30", features = ["bundled", "chrono"] }
+chrono = { version = "0.4", features = ["serde"] }
+
+# UUID for unique identifiers
+uuid = { version = "1.0", features = ["v4", "serde"] }
+
+# Environment variables
+dotenvy = "0.15"
+
+# File watching for configuration changes
+notify = "6.0"
+
+# HTTP client for testing
+reqwest = { version = "0.11", features = ["json"] }
+
+[dev-dependencies]
+tokio-test = "0.4"

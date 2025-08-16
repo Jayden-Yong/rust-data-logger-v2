@@ -1,0 +1,39 @@
+[server]
+port = 8080
+host = "0.0.0.0"
+
+[database]
+path = "data.db"
+max_log_entries = 1000000
+cleanup_interval_hours = 24
+
+[[devices]]
+id = "device1"
+name = "Example Modbus TCP Device"
+enabled = false
+polling_interval_ms = 1000
+timeout_ms = 5000
+retry_count = 3
+
+[devices.protocol]
+type = "modbus_tcp"
+host = "192.168.1.100"
+port = 502
+slave_id = 1
+
+[[devices.tags]]
+name = "temperature"
+address = 1
+data_type = "holding_register"
+description = "Temperature sensor"
+
+[devices.tags.scaling]
+multiplier = 0.1
+offset = 0.0
+unit = "°C"
+
+[logging]
+level = "info"
+file_path = "app.log"
+max_file_size_mb = 10
+max_files = 5

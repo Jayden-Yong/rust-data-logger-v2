@@ -1,0 +1,30 @@
+# Rust
+/target/
+**/*.rs.bk
+Cargo.lock
+
+# Database
+*.db
+*.sqlite
+
+# Logs
+*.log
+
+# Environment variables
+.env
+
+# Node.js (for future React development)
+/web/node_modules/
+/web/build/
+/web/.env
+
+# IDE
+.vscode/
+.idea/
+
+# macOS
+.DS_Store
+
+# Temporary files
+*.tmp
+*.temp
