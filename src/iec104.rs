@@ -7,7 +7,7 @@ use chrono::Utc;
 use bytes::{Bytes, BytesMut, BufMut};
 
 use crate::config::{DeviceConfig, ProtocolConfig};
-use crate::database::{LogEntry, Database};
+use crate::database::{LogEntry, Database, DeviceTag};
 
 // IEC 104 Protocol constants
 const START_BYTE: u8 = 0x68;
@@ -302,6 +302,75 @@ impl Iec104Client {
         } else {
             1
         }
+    }
+
+    pub async fn read_specific_tags(&mut self, database: &Database, device_tags: &[DeviceTag]) -> Result<Vec<LogEntry>> {
+        let mut log_entries = Vec::new();
+        let timestamp = Utc::now();
+
+        // Send interrogation command to get all current values
+        self.send_interrogation().await?;
+
+        // Read multiple frames to get all data
+        for _ in 0..10 { // Limit to prevent infinite loop
+            match tokio::time::timeout(
+                tokio::time::Duration::from_millis(1000),
+                self.receive_frame()
+            ).await {
+                Ok(Ok(frame)) => {
+                    if let Some(entries) = self.parse_data_frame_for_specific_tags(&frame, timestamp, device_tags) {
+                        for entry in entries {
+                            // Insert into database
+                            if let Err(e) = database.insert_log_entry(&entry).await {
+                                error!("Failed to insert log entry: {}", e);
+                            }
+                            log_entries.push(entry);
+                        }
+                    }
+                },
+                Ok(Err(e)) => {
+                    error!("Error receiving frame: {}", e);
+                    break;
+                },
+                Err(_) => {
+                    // Timeout - no more data
+                    break;
+                }
+            }
+        }
+
+        Ok(log_entries)
+    }
+
+    fn parse_data_frame_for_specific_tags(&self, frame: &Bytes, timestamp: chrono::DateTime<Utc>, device_tags: &[DeviceTag]) -> Option<Vec<LogEntry>> {
+        // For now, use the existing parse_data_frame logic but filter for specific tags
+        // In a real implementation, you would filter based on IOA (Information Object Address)
+        // that corresponds to the device_tags addresses
+        
+        let all_entries = self.parse_data_frame(frame, timestamp)?;
+        let mut filtered_entries = Vec::new();
+        
+        for entry in all_entries {
+            // Check if this entry corresponds to one of our device tags
+            if device_tags.iter().any(|tag| tag.name == entry.tag_name) {
+                // Apply scaling from device tag
+                if let Some(device_tag) = device_tags.iter().find(|tag| tag.name == entry.tag_name) {
+                    let scaled_value = entry.value * device_tag.scaling_multiplier + device_tag.scaling_offset;
+                    let scaled_entry = LogEntry {
+                        id: entry.id,
+                        device_id: entry.device_id,
+                        tag_name: entry.tag_name,
+                        value: scaled_value,
+                        quality: entry.quality,
+                        timestamp: entry.timestamp,
+                        unit: device_tag.unit.clone(),
+                    };
+                    filtered_entries.push(scaled_entry);
+                }
+            }
+        }
+        
+        Some(filtered_entries)
     }
 
     pub async fn disconnect(&mut self) -> Result<()> {

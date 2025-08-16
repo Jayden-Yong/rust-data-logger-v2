@@ -4,8 +4,8 @@ use anyhow::{Result, anyhow};
 use tracing::{info, warn, error};
 use chrono::Utc;
 
-use crate::config::{DeviceConfig, ProtocolConfig, TagConfig, DataType};
-use crate::database::{LogEntry, Database};
+use crate::config::{DeviceConfig, ProtocolConfig, TagConfig, DataType, ScalingConfig};
+use crate::database::{LogEntry, Database, DeviceTag};
 
 pub struct ModbusClient {
     device_config: DeviceConfig,
@@ -174,6 +174,78 @@ impl ModbusClient {
             ProtocolConfig::ModbusTcp { slave_id, .. } => *slave_id,
             ProtocolConfig::ModbusRtu { slave_id, .. } => *slave_id,
             _ => 1,
+        }
+    }
+
+    pub async fn read_specific_tags(&mut self, database: &Database, device_tags: &[DeviceTag]) -> Result<Vec<LogEntry>> {
+        let mut log_entries = Vec::new();
+        let timestamp = Utc::now();
+
+        for device_tag in device_tags {
+            // Convert DeviceTag to TagConfig for compatibility with existing read_tag method
+            let tag_config = TagConfig {
+                name: device_tag.name.clone(),
+                address: device_tag.address,
+                data_type: self.parse_data_type(&device_tag.data_type),
+                scaling: Some(ScalingConfig {
+                    multiplier: device_tag.scaling_multiplier,
+                    offset: device_tag.scaling_offset,
+                    unit: device_tag.unit.clone(),
+                }),
+                description: device_tag.description.clone(),
+            };
+
+            match self.read_tag(&tag_config).await {
+                Ok(value) => {
+                    let scaled_value = self.apply_scaling(value, &tag_config);
+                    let entry = LogEntry {
+                        id: None,
+                        device_id: self.device_config.id.clone(),
+                        tag_name: device_tag.name.clone(),
+                        value: scaled_value,
+                        quality: "Good".to_string(),
+                        timestamp,
+                        unit: device_tag.unit.clone(),
+                    };
+
+                    // Insert into database
+                    if let Err(e) = database.insert_log_entry(&entry).await {
+                        error!("Failed to insert log entry: {}", e);
+                    }
+
+                    log_entries.push(entry);
+                },
+                Err(e) => {
+                    warn!("Failed to read tag {}: {}", device_tag.name, e);
+                    let entry = LogEntry {
+                        id: None,
+                        device_id: self.device_config.id.clone(),
+                        tag_name: device_tag.name.clone(),
+                        value: 0.0,
+                        quality: "Bad".to_string(),
+                        timestamp,
+                        unit: device_tag.unit.clone(),
+                    };
+
+                    log_entries.push(entry);
+                }
+            }
+        }
+
+        Ok(log_entries)
+    }
+
+    fn parse_data_type(&self, data_type_str: &str) -> DataType {
+        match data_type_str {
+            "coil" => DataType::Coil,
+            "discrete_input" => DataType::DiscreteInput,
+            "holding_register" => DataType::HoldingRegister,
+            "input_register" => DataType::InputRegister,
+            "float32" => DataType::Float32,
+            "uint16" => DataType::UInt16,
+            "int16" => DataType::Int16,
+            "uint32" => DataType::UInt32,
+            _ => DataType::HoldingRegister, // Default fallback
         }
     }
 

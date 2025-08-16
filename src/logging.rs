@@ -7,14 +7,14 @@ use tracing::{info, warn, error};
 use chrono::Utc;
 
 use crate::config::{AppConfig, DeviceConfig, ProtocolConfig};
-use crate::database::{Database, DeviceStatus};
+use crate::database::{Database, DeviceStatus, DeviceTag, ScheduleGroup};
 use crate::modbus::ModbusClient;
 use crate::iec104::Iec104Client;
 
 pub struct LoggingService {
     database: Arc<Database>,
     config: Arc<AppConfig>,
-    device_tasks: Arc<RwLock<HashMap<String, JoinHandle<()>>>>,
+    device_tasks: Arc<RwLock<HashMap<String, Vec<JoinHandle<()>>>>>, // Device ID -> list of schedule group tasks
     device_clients: Arc<Mutex<HashMap<String, DeviceClient>>>,
 }
 
@@ -53,20 +53,71 @@ impl LoggingService {
             .ok_or_else(|| anyhow::anyhow!("Device not found: {}", device_id))?
             .clone();
 
-        // Stop existing task if running
+        // Stop existing tasks if running
         self.stop_device(device_id).await?;
 
         info!("Starting device: {}", device_id);
+
+        // Get device tags from database grouped by schedule group
+        let device_tags = self.database.get_device_tags(device_id).await?;
+        let schedule_groups = self.database.get_schedule_groups().await?;
+        
+        // Group tags by schedule group
+        let mut schedule_group_tags: HashMap<String, (ScheduleGroup, Vec<DeviceTag>)> = HashMap::new();
+        
+        for tag in device_tags {
+            if !tag.enabled {
+                continue;
+            }
+            
+            let schedule_group_id = tag.schedule_group_id
+                .clone()
+                .unwrap_or_else(|| "medium_freq".to_string()); // Default fallback
+                
+            if let Some(schedule_group) = schedule_groups.iter().find(|sg| sg.id == schedule_group_id) {
+                if schedule_group.enabled {
+                    schedule_group_tags
+                        .entry(schedule_group_id.clone())
+                        .or_insert_with(|| (schedule_group.clone(), Vec::new()))
+                        .1
+                        .push(tag);
+                }
+            }
+        }
+
+        if schedule_group_tags.is_empty() {
+            warn!("No enabled tags with valid schedule groups found for device: {}", device_id);
+            return Ok(());
+        }
 
         let database = self.database.clone();
         let device_clients = self.device_clients.clone();
         let device_config_clone = device_config.clone();
 
-        let task = tokio::spawn(async move {
-            Self::device_loop(device_config_clone, database, device_clients).await;
-        });
+        let mut tasks = Vec::new();
 
-        self.device_tasks.write().await.insert(device_id.to_string(), task);
+        // Create a task for each schedule group that has tags
+        for (_schedule_group_id, (schedule_group, tags)) in schedule_group_tags {
+            let database_clone = database.clone();
+            let device_clients_clone = device_clients.clone();
+            let device_config_task = device_config_clone.clone();
+            let device_id_clone = device_id.to_string();
+
+            let task = tokio::spawn(async move {
+                Self::schedule_group_loop(
+                    device_id_clone,
+                    device_config_task,
+                    schedule_group,
+                    tags,
+                    database_clone,
+                    device_clients_clone,
+                ).await;
+            });
+
+            tasks.push(task);
+        }
+
+        self.device_tasks.write().await.insert(device_id.to_string(), tasks);
 
         // Update device status
         let status = DeviceStatus {
@@ -84,9 +135,11 @@ impl LoggingService {
     pub async fn stop_device(&self, device_id: &str) -> Result<()> {
         info!("Stopping device: {}", device_id);
 
-        // Stop the task
-        if let Some(task) = self.device_tasks.write().await.remove(device_id) {
-            task.abort();
+        // Stop all tasks for this device
+        if let Some(tasks) = self.device_tasks.write().await.remove(device_id) {
+            for task in tasks {
+                task.abort();
+            }
         }
 
         // Disconnect the client
@@ -117,16 +170,24 @@ impl LoggingService {
         Ok(())
     }
 
-    async fn device_loop(
+    async fn schedule_group_loop(
+        device_id: String,
         device_config: DeviceConfig,
+        schedule_group: ScheduleGroup,
+        tags: Vec<DeviceTag>,
         database: Arc<Database>,
         device_clients: Arc<Mutex<HashMap<String, DeviceClient>>>,
     ) {
-        let device_id = device_config.id.clone();
         let mut connection_count = 0;
+        let polling_interval = tokio::time::Duration::from_millis(schedule_group.polling_interval_ms as u64);
+
+        info!(
+            "Starting schedule group '{}' for device '{}' with {} tags, polling every {}ms",
+            schedule_group.name, device_id, tags.len(), schedule_group.polling_interval_ms
+        );
 
         loop {
-            // Create client if not exists
+            // Create client if not exists (shared across all schedule groups for a device)
             let mut clients = device_clients.lock().await;
             if !clients.contains_key(&device_id) {
                 let client = match &device_config.protocol {
@@ -153,23 +214,33 @@ impl LoggingService {
                 Ok(()) => {
                     connection_count += 1;
                     
-                    // Update status to connected
-                    let status = DeviceStatus {
-                        device_id: device_id.clone(),
-                        status: "Connected".to_string(),
-                        last_update: Utc::now(),
-                        error_message: None,
-                        connection_count,
-                    };
-                    if let Err(e) = database.update_device_status(&status).await {
-                        error!("Failed to update device status: {}", e);
+                    // Update status to connected (only on first connection)
+                    if connection_count == 1 {
+                        let status = DeviceStatus {
+                            device_id: device_id.clone(),
+                            status: "Connected".to_string(),
+                            last_update: Utc::now(),
+                            error_message: None,
+                            connection_count,
+                        };
+                        if let Err(e) = database.update_device_status(&status).await {
+                            error!("Failed to update device status: {}", e);
+                        }
                     }
 
-                    // Start polling loop
-                    Self::polling_loop(&mut client, &device_config, &database).await;
+                    // Start polling loop for this schedule group
+                    Self::schedule_group_polling_loop(
+                        &mut client,
+                        &device_config,
+                        &schedule_group,
+                        &tags,
+                        &database,
+                        polling_interval,
+                    ).await;
                 },
                 Err(e) => {
-                    error!("Failed to connect to device {}: {}", device_id, e);
+                    error!("Failed to connect to device {} for schedule group {}: {}", 
+                           device_id, schedule_group.name, e);
                     
                     // Update status to error
                     let status = DeviceStatus {
@@ -188,27 +259,38 @@ impl LoggingService {
             // Put client back
             device_clients.lock().await.insert(device_id.clone(), client);
 
-            // Wait before retry
+            // Wait before retry (use longer interval for failed connections)
             tokio::time::sleep(tokio::time::Duration::from_millis(5000)).await;
         }
     }
 
-    async fn polling_loop(
+    async fn schedule_group_polling_loop(
         client: &mut DeviceClient,
         device_config: &DeviceConfig,
+        schedule_group: &ScheduleGroup,
+        tags: &[DeviceTag],
         database: &Database,
+        polling_interval: tokio::time::Duration,
     ) {
         let mut retry_count = 0;
 
+        info!(
+            "Starting polling loop for device '{}', schedule group '{}' with {} tags",
+            device_config.id, schedule_group.name, tags.len()
+        );
+
         loop {
             let result = match client {
-                DeviceClient::Modbus(modbus) => modbus.read_tags(database).await,
-                DeviceClient::Iec104(iec104) => iec104.read_tags(database).await,
+                DeviceClient::Modbus(modbus) => modbus.read_specific_tags(database, tags).await,
+                DeviceClient::Iec104(iec104) => iec104.read_specific_tags(database, tags).await,
             };
 
             match result {
                 Ok(log_entries) => {
-                    info!("Read {} values from device {}", log_entries.len(), device_config.id);
+                    info!(
+                        "Read {} values from device '{}' schedule group '{}'",
+                        log_entries.len(), device_config.id, schedule_group.name
+                    );
                     retry_count = 0;
 
                     // Update status to reading
@@ -224,18 +306,24 @@ impl LoggingService {
                     }
                 },
                 Err(e) => {
-                    warn!("Failed to read from device {}: {}", device_config.id, e);
+                    warn!(
+                        "Failed to read from device '{}' schedule group '{}': {}",
+                        device_config.id, schedule_group.name, e
+                    );
                     retry_count += 1;
 
                     if retry_count >= device_config.retry_count {
-                        error!("Max retries reached for device {}", device_config.id);
+                        error!(
+                            "Max retries reached for device '{}' schedule group '{}'",
+                            device_config.id, schedule_group.name
+                        );
                         break;
                     }
                 }
             }
 
-            // Wait for next poll
-            tokio::time::sleep(tokio::time::Duration::from_millis(device_config.polling_interval_ms)).await;
+            // Wait for next poll using schedule group interval
+            tokio::time::sleep(polling_interval).await;
         }
     }
 
@@ -275,6 +363,10 @@ impl LoggingService {
     }
 
     pub async fn is_device_running(&self, device_id: &str) -> bool {
-        self.device_tasks.read().await.contains_key(device_id)
+        if let Some(tasks) = self.device_tasks.read().await.get(device_id) {
+            !tasks.is_empty()
+        } else {
+            false
+        }
     }
 }
