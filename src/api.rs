@@ -4,10 +4,11 @@ use axum::{
     response::Json,
 };
 use serde::{Deserialize, Serialize};
+use tracing::{info, error};
 
 use crate::{AppState};
 use crate::config::{AppConfig, DeviceConfig, save_config};
-use crate::database::LogEntry;
+use crate::database::{LogEntry, DeviceModel, TagTemplate, DeviceInstance, DeviceTag, ScheduleGroup};
 
 #[derive(Serialize, Deserialize)]
 pub struct ApiResponse<T> {
@@ -211,4 +212,386 @@ pub async fn get_status(
     };
 
     Ok(Json(ApiResponse::success(response)))
+}
+
+// Device Model API endpoints
+pub async fn get_device_models(
+    State(state): State<AppState>,
+) -> Result<Json<ApiResponse<Vec<DeviceModel>>>, StatusCode> {
+    match state.database.get_device_models().await {
+        Ok(models) => Ok(Json(ApiResponse::success(models))),
+        Err(e) => {
+            error!("Failed to get device models: {}", e);
+            Err(StatusCode::INTERNAL_SERVER_ERROR)
+        }
+    }
+}
+
+pub async fn get_device_model(
+    State(state): State<AppState>,
+    Path(model_id): Path<String>,
+) -> Result<Json<ApiResponse<DeviceModel>>, StatusCode> {
+    match state.database.get_device_model(&model_id).await {
+        Ok(Some(model)) => Ok(Json(ApiResponse::success(model))),
+        Ok(None) => Err(StatusCode::NOT_FOUND),
+        Err(e) => {
+            error!("Failed to get device model {}: {}", model_id, e);
+            Err(StatusCode::INTERNAL_SERVER_ERROR)
+        }
+    }
+}
+
+pub async fn get_tag_templates(
+    State(state): State<AppState>,
+    Path(model_id): Path<String>,
+) -> Result<Json<ApiResponse<Vec<TagTemplate>>>, StatusCode> {
+    match state.database.get_tag_templates(&model_id).await {
+        Ok(templates) => Ok(Json(ApiResponse::success(templates))),
+        Err(e) => {
+            error!("Failed to get tag templates for model {}: {}", model_id, e);
+            Err(StatusCode::INTERNAL_SERVER_ERROR)
+        }
+    }
+}
+
+// Enhanced Device API endpoints with model support
+#[derive(Deserialize)]
+pub struct CreateDeviceRequest {
+    pub id: String,
+    pub name: String,
+    pub model_id: Option<String>,
+    pub enabled: bool,
+    pub polling_interval_ms: u32,
+    pub timeout_ms: u32,
+    pub retry_count: u32,
+    pub protocol_config: serde_json::Value,
+    pub tags: Vec<CreateTagRequest>,
+}
+
+#[derive(Deserialize)]
+pub struct CreateTagRequest {
+    pub name: String,
+    pub address: u16,
+    pub data_type: String,
+    pub description: Option<String>,
+    pub scaling_multiplier: f64,
+    pub scaling_offset: f64,
+    pub unit: Option<String>,
+    pub read_only: bool,
+    pub enabled: bool,
+    pub schedule_group_id: Option<String>,
+}
+
+pub async fn create_device_with_tags(
+    State(state): State<AppState>,
+    Json(request): Json<CreateDeviceRequest>,
+) -> Result<Json<ApiResponse<String>>, StatusCode> {
+    let now = chrono::Utc::now();
+
+    // Create device instance
+    let device = DeviceInstance {
+        id: request.id.clone(),
+        name: request.name,
+        model_id: request.model_id,
+        enabled: request.enabled,
+        polling_interval_ms: request.polling_interval_ms,
+        timeout_ms: request.timeout_ms,
+        retry_count: request.retry_count,
+        protocol_config: serde_json::to_string(&request.protocol_config).unwrap_or_default(),
+        created_at: now,
+        updated_at: now,
+    };
+
+    // Create device in database
+    if let Err(e) = state.database.create_device(&device).await {
+        error!("Failed to create device: {}", e);
+        return Err(StatusCode::INTERNAL_SERVER_ERROR);
+    }
+
+    // Create device tags
+    let device_tags: Vec<DeviceTag> = request.tags.into_iter().map(|tag| DeviceTag {
+        id: None,
+        device_id: request.id.clone(),
+        name: tag.name,
+        address: tag.address,
+        data_type: tag.data_type,
+        description: tag.description,
+        scaling_multiplier: tag.scaling_multiplier,
+        scaling_offset: tag.scaling_offset,
+        unit: tag.unit,
+        read_only: tag.read_only,
+        enabled: tag.enabled,
+        schedule_group_id: tag.schedule_group_id,
+    }).collect();
+
+    if let Err(e) = state.database.create_device_tags(&request.id, &device_tags).await {
+        error!("Failed to create device tags: {}", e);
+        return Err(StatusCode::INTERNAL_SERVER_ERROR);
+    }
+
+    info!("Created device {} with {} tags", request.id, device_tags.len());
+    Ok(Json(ApiResponse::success("Device created successfully".to_string())))
+}
+
+pub async fn get_devices_enhanced(
+    State(state): State<AppState>,
+) -> Result<Json<ApiResponse<Vec<DeviceWithTags>>>, StatusCode> {
+    let devices = match state.database.get_devices().await {
+        Ok(devices) => devices,
+        Err(e) => {
+            error!("Failed to get devices: {}", e);
+            return Err(StatusCode::INTERNAL_SERVER_ERROR);
+        }
+    };
+
+    let mut devices_with_tags = Vec::new();
+    for device in devices {
+        let tags = match state.database.get_device_tags(&device.id).await {
+            Ok(tags) => tags,
+            Err(e) => {
+                error!("Failed to get tags for device {}: {}", device.id, e);
+                return Err(StatusCode::INTERNAL_SERVER_ERROR);
+            }
+        };
+
+        // Get device status from database
+        let device_status = state.database.get_device_status(&device.id).await.ok().flatten();
+        let status = device_status.as_ref().map(|s| s.status.clone());
+        let last_update = device_status.as_ref().map(|s| s.last_update.to_rfc3339());
+        
+        // Check if device is currently running
+        let is_running = state.logging_service.is_device_running(&device.id).await;
+
+        devices_with_tags.push(DeviceWithTags { 
+            device, 
+            tags, 
+            status,
+            is_running,
+            last_update,
+        });
+    }
+
+    Ok(Json(ApiResponse::success(devices_with_tags)))
+}
+
+pub async fn get_device_enhanced(
+    State(state): State<AppState>,
+    Path(device_id): Path<String>,
+) -> Result<Json<ApiResponse<DeviceWithTags>>, StatusCode> {
+    let device = match state.database.get_device(&device_id).await {
+        Ok(Some(device)) => device,
+        Ok(None) => return Err(StatusCode::NOT_FOUND),
+        Err(e) => {
+            error!("Failed to get device {}: {}", device_id, e);
+            return Err(StatusCode::INTERNAL_SERVER_ERROR);
+        }
+    };
+
+    let tags = match state.database.get_device_tags(&device_id).await {
+        Ok(tags) => tags,
+        Err(e) => {
+            error!("Failed to get tags for device {}: {}", device_id, e);
+            return Err(StatusCode::INTERNAL_SERVER_ERROR);
+        }
+    };
+
+    // Get device status from database
+    let device_status = state.database.get_device_status(&device_id).await.ok().flatten();
+    let status = device_status.as_ref().map(|s| s.status.clone());
+    let last_update = device_status.as_ref().map(|s| s.last_update.to_rfc3339());
+    
+    // Check if device is currently running
+    let is_running = state.logging_service.is_device_running(&device_id).await;
+
+    Ok(Json(ApiResponse::success(DeviceWithTags { 
+        device, 
+        tags, 
+        status,
+        is_running,
+        last_update,
+    })))
+}
+
+pub async fn get_device_tags_api(
+    State(state): State<AppState>,
+    Path(device_id): Path<String>,
+) -> Result<Json<ApiResponse<Vec<DeviceTag>>>, StatusCode> {
+    match state.database.get_device_tags(&device_id).await {
+        Ok(tags) => Ok(Json(ApiResponse::success(tags))),
+        Err(e) => {
+            error!("Failed to get device tags for {}: {}", device_id, e);
+            Err(StatusCode::INTERNAL_SERVER_ERROR)
+        }
+    }
+}
+
+pub async fn update_device_with_tags(
+    State(state): State<AppState>,
+    Path(device_id): Path<String>,
+    Json(request): Json<CreateDeviceRequest>,
+) -> Result<Json<ApiResponse<String>>, StatusCode> {
+    let now = chrono::Utc::now();
+
+    // Update device instance
+    let device = DeviceInstance {
+        id: device_id.clone(),
+        name: request.name,
+        model_id: request.model_id,
+        enabled: request.enabled,
+        polling_interval_ms: request.polling_interval_ms,
+        timeout_ms: request.timeout_ms,
+        retry_count: request.retry_count,
+        protocol_config: serde_json::to_string(&request.protocol_config).unwrap_or_default(),
+        created_at: now, // This will be ignored in update
+        updated_at: now,
+    };
+
+    // Update device in database
+    if let Err(e) = state.database.update_device(&device).await {
+        error!("Failed to update device: {}", e);
+        return Err(StatusCode::INTERNAL_SERVER_ERROR);
+    }
+
+    // Delete existing tags and recreate them
+    if let Err(e) = state.database.delete_device_tags(&device_id).await {
+        error!("Failed to delete existing device tags: {}", e);
+        return Err(StatusCode::INTERNAL_SERVER_ERROR);
+    }
+
+    // Create updated device tags
+    let device_tags: Vec<DeviceTag> = request.tags.into_iter().map(|tag| DeviceTag {
+        id: None,
+        device_id: device_id.clone(),
+        name: tag.name,
+        address: tag.address,
+        data_type: tag.data_type,
+        description: tag.description,
+        scaling_multiplier: tag.scaling_multiplier,
+        scaling_offset: tag.scaling_offset,
+        unit: tag.unit,
+        read_only: tag.read_only,
+        enabled: tag.enabled,
+        schedule_group_id: tag.schedule_group_id,
+    }).collect();
+
+    if let Err(e) = state.database.create_device_tags(&device_id, &device_tags).await {
+        error!("Failed to update device tags: {}", e);
+        return Err(StatusCode::INTERNAL_SERVER_ERROR);
+    }
+
+    info!("Updated device {} with {} tags", device_id, device_tags.len());
+    Ok(Json(ApiResponse::success("Device updated successfully".to_string())))
+}
+
+#[derive(Serialize)]
+pub struct DeviceWithTags {
+    pub device: DeviceInstance,
+    pub tags: Vec<DeviceTag>,
+    pub status: Option<String>,
+    pub is_running: bool,
+    pub last_update: Option<String>,
+}
+
+// Schedule Group API endpoints
+pub async fn get_schedule_groups(
+    State(state): State<AppState>,
+) -> Result<Json<ApiResponse<Vec<ScheduleGroup>>>, StatusCode> {
+    let schedule_groups = match state.database.get_schedule_groups().await {
+        Ok(groups) => groups,
+        Err(e) => {
+            error!("Failed to get schedule groups: {}", e);
+            return Err(StatusCode::INTERNAL_SERVER_ERROR);
+        }
+    };
+
+    Ok(Json(ApiResponse::success(schedule_groups)))
+}
+
+pub async fn get_schedule_group(
+    State(state): State<AppState>,
+    Path(group_id): Path<String>,
+) -> Result<Json<ApiResponse<ScheduleGroup>>, StatusCode> {
+    let schedule_group = match state.database.get_schedule_group(&group_id).await {
+        Ok(Some(group)) => group,
+        Ok(None) => return Err(StatusCode::NOT_FOUND),
+        Err(e) => {
+            error!("Failed to get schedule group {}: {}", group_id, e);
+            return Err(StatusCode::INTERNAL_SERVER_ERROR);
+        }
+    };
+
+    Ok(Json(ApiResponse::success(schedule_group)))
+}
+
+#[derive(Deserialize)]
+pub struct CreateScheduleGroupRequest {
+    pub id: String,
+    pub name: String,
+    pub polling_interval_ms: u32,
+    pub description: Option<String>,
+    pub enabled: bool,
+}
+
+pub async fn create_schedule_group(
+    State(state): State<AppState>,
+    Json(request): Json<CreateScheduleGroupRequest>,
+) -> Result<Json<ApiResponse<String>>, StatusCode> {
+    let now = chrono::Utc::now();
+
+    let schedule_group = ScheduleGroup {
+        id: request.id.clone(),
+        name: request.name,
+        polling_interval_ms: request.polling_interval_ms,
+        description: request.description,
+        enabled: request.enabled,
+        created_at: now,
+        updated_at: now,
+    };
+
+    if let Err(e) = state.database.create_schedule_group(&schedule_group).await {
+        error!("Failed to create schedule group: {}", e);
+        return Err(StatusCode::INTERNAL_SERVER_ERROR);
+    }
+
+    info!("Created schedule group {}", request.id);
+    Ok(Json(ApiResponse::success("Schedule group created successfully".to_string())))
+}
+
+pub async fn update_schedule_group(
+    State(state): State<AppState>,
+    Path(group_id): Path<String>,
+    Json(request): Json<CreateScheduleGroupRequest>,
+) -> Result<Json<ApiResponse<String>>, StatusCode> {
+    let now = chrono::Utc::now();
+
+    let schedule_group = ScheduleGroup {
+        id: group_id.clone(),
+        name: request.name,
+        polling_interval_ms: request.polling_interval_ms,
+        description: request.description,
+        enabled: request.enabled,
+        created_at: now, // This will be ignored in update
+        updated_at: now,
+    };
+
+    if let Err(e) = state.database.update_schedule_group(&schedule_group).await {
+        error!("Failed to update schedule group: {}", e);
+        return Err(StatusCode::INTERNAL_SERVER_ERROR);
+    }
+
+    info!("Updated schedule group {}", group_id);
+    Ok(Json(ApiResponse::success("Schedule group updated successfully".to_string())))
+}
+
+pub async fn delete_schedule_group(
+    State(state): State<AppState>,
+    Path(group_id): Path<String>,
+) -> Result<Json<ApiResponse<String>>, StatusCode> {
+    if let Err(e) = state.database.delete_schedule_group(&group_id).await {
+        error!("Failed to delete schedule group: {}", e);
+        return Err(StatusCode::INTERNAL_SERVER_ERROR);
+    }
+
+    info!("Deleted schedule group {}", group_id);
+    Ok(Json(ApiResponse::success("Schedule group deleted successfully".to_string())))
 }

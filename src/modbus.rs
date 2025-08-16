@@ -143,13 +143,19 @@ impl ModbusClient {
             },
             DataType::Float32 => {
                 let result = client.read_holding_registers(tag.address, 2).await?;
-                let bytes = [
-                    (result[0] & 0xFF) as u8,
-                    ((result[0] >> 8) & 0xFF) as u8,
-                    (result[1] & 0xFF) as u8,
-                    ((result[1] >> 8) & 0xFF) as u8,
-                ];
-                let value = f32::from_le_bytes(bytes);
+                // let bytes = [
+                //     (result[0] & 0xFF) as u8,
+                //     ((result[0] >> 8) & 0xFF) as u8,
+                //     (result[1] & 0xFF) as u8,
+                //     ((result[1] >> 8) & 0xFF) as u8,
+                // ];
+                // let value = f32::from_le_bytes(bytes);
+
+                let reg1 = result[1];  // Most significant word
+                let reg2 = result[0];  // Least significant word
+                let combined = ((reg1 as u32) << 16) | (reg2 as u32);
+                let bytes = u32::to_be_bytes(combined);
+                let value = f32::from_be_bytes(bytes);
                 Ok(value as f64)
             },
         }

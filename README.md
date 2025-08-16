@@ -105,6 +105,15 @@ unit = "°C"
 - `POST /api/devices/{id}/start` - Start device logging
 - `POST /api/devices/{id}/stop` - Stop device logging
 
+### Enhanced Device Management with Models
+- `GET /api/device-models` - List all available device models
+- `GET /api/device-models/{id}` - Get specific device model details  
+- `GET /api/device-models/{id}/tags` - Get tag templates for a model
+- `GET /api/devices-enhanced` - List devices with their tags
+- `POST /api/devices-enhanced` - Create device with tags from model
+- `GET /api/devices-enhanced/{id}` - Get device with all tag details
+- `GET /api/devices/{id}/tags` - Get tags for a specific device
+
 ### Data Access
 - `GET /api/logs` - Get all logs (with pagination)
 - `GET /api/logs/{device_id}` - Get logs for specific device
@@ -204,7 +213,65 @@ web/
 ### Adding New Protocols
 
 1. Create a new client module (e.g., `src/dnp3.rs`)
-2. Implement the client with `connect()`, `read_tags()`, and `disconnect()` methods
+2. Implement the client with `connect()`, `### Enhanced Device Management
+
+AVA Device Logger now includes advanced device configuration features:
+
+#### Device Models
+- **Predefined Models**: Pre-configured device models for common industrial equipment
+- **Tag Templates**: Automatic tag population based on device model selection
+- **Custom Devices**: Support for devices without predefined templates
+- **Manufacturer Support**: Models organized by manufacturer (Schneider, Siemens, ABB, etc.)
+
+#### Supported Device Models
+- **Schneider Electric**:
+  - Modicon M221 PLC (Production counters, temperature sensors, pressure sensors)
+  - PowerLogic PM5000 Energy Meter (Voltage, current, power, energy measurements)
+- **Siemens**:
+  - S7-1200 PLC (Data blocks, analog inputs, motor control)
+- **ABB**:
+  - AC500 PLC (Standard industrial automation tags)
+- **Generic**:
+  - IEC 104 RTU (Status points, analog values, counters)
+  - Custom Device (No predefined tags)
+
+#### Tag Configuration Features
+- **Automatic Population**: Tags auto-populated when selecting a device model
+- **Custom Tags**: Add, edit, and remove tags as needed
+- **Data Types**: Support for coils, registers, and various numeric formats
+- **Scaling**: Built-in scaling with multiplier and offset
+- **Units**: Unit specification for engineering values
+- **Enable/Disable**: Individual tag control
+
+#### Enhanced API Endpoints
+
+##### Device Models
+- `GET /api/device-models` - List all available device models
+- `GET /api/device-models/{id}` - Get specific device model details  
+- `GET /api/device-models/{id}/tags` - Get tag templates for a model
+
+##### Enhanced Device Management
+- `GET /api/devices-enhanced` - List devices with their tags
+- `POST /api/devices-enhanced` - Create device with tags from model
+- `GET /api/devices-enhanced/{id}` - Get device with all tag details
+- `GET /api/devices/{id}/tags` - Get tags for a specific device
+
+### Web Interface Enhancements
+
+#### Enhanced Device Configuration
+Navigate to `/devices-enhanced` to access the new device configuration interface:
+
+- **Model Browser**: Filterable list of all available device models
+- **Smart Tag Population**: Automatic tag creation based on selected model
+- **Real-time Preview**: See tag templates before creating device
+- **Advanced Filtering**: Filter models by protocol, manufacturer, or search text
+- **Inline Tag Editing**: Edit tag properties directly in the configuration table
+
+#### Device Model Browser
+- **Search & Filter**: Find models by name, manufacturer, or protocol
+- **Tag Preview**: View all predefined tags before selection
+- **Model Details**: Complete model information including descriptions
+- **Protocol Support**: Visual indicators for supported protocolss()`, and `disconnect()` methods
 3. Add the protocol variant to `ProtocolConfig` in `config.rs`
 4. Update the `DeviceClient` enum in `logging.rs`
 5. Add protocol-specific UI components in the React frontend

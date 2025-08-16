@@ -6,9 +6,13 @@ import {
   SettingOutlined,
   DatabaseOutlined,
   MonitorOutlined,
+  ApiOutlined,
+  ClockCircleOutlined,
 } from '@ant-design/icons';
 import Dashboard from './components/Dashboard';
 import DeviceConfig from './components/DeviceConfig';
+import EnhancedDeviceConfig from './components/EnhancedDeviceConfig';
+import ScheduleGroupConfig from './components/ScheduleGroupConfig';
 import DataLogs from './components/DataLogs';
 import SystemConfig from './components/SystemConfig';
 
@@ -25,10 +29,20 @@ function App() {
       icon: <DashboardOutlined />,
       label: 'Dashboard',
     },
+    // {
+    //   key: '/devices',
+    //   icon: <MonitorOutlined />,
+    //   label: 'Device Config',
+    // },
     {
       key: '/devices',
-      icon: <MonitorOutlined />,
+      icon: <ApiOutlined />,
       label: 'Devices',
+    },
+    {
+      key: '/schedule-groups',
+      icon: <ClockCircleOutlined />,
+      label: 'Schedule Groups',
     },
     {
       key: '/logs',
@@ -93,7 +107,8 @@ function App() {
           >
             <Routes>
               <Route path="/" element={<Dashboard />} />
-              <Route path="/devices" element={<DeviceConfig />} />
+              <Route path="/devices" element={<EnhancedDeviceConfig />} />
+              <Route path="/schedule-groups" element={<ScheduleGroupConfig />} />
               <Route path="/logs" element={<DataLogs />} />
               <Route path="/config" element={<SystemConfig />} />
             </Routes>

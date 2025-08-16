@@ -14,7 +14,8 @@ import axios from 'axios';
 import moment from 'moment';
 
 const Dashboard = () => {
-  const [status, setStatus] = useState(null);
+  const [devices, setDevices] = useState([]);
+  const [systemStatus, setSystemStatus] = useState(null);
   const [recentLogs, setRecentLogs] = useState([]);
   const [loading, setLoading] = useState(true);
 
@@ -26,13 +27,26 @@ const Dashboard = () => {
 
   const fetchData = async () => {
     try {
-      const [statusRes, logsRes] = await Promise.all([
+      const [devicesRes, statusRes, logsRes] = await Promise.all([
+        axios.get('/api/devices-enhanced'),
         axios.get('/api/status'),
         axios.get('/api/logs?limit=10')
       ]);
 
+      if (devicesRes.data.success) {
+        const devicesWithStatus = devicesRes.data.data.map(deviceData => ({
+          ...deviceData.device,
+          tags: deviceData.tags,
+          status: deviceData.status,
+          is_running: deviceData.is_running,
+          last_update: deviceData.last_update,
+        }));
+        console.log(devicesWithStatus);
+        setDevices(devicesWithStatus);
+      }
+
       if (statusRes.data.success) {
-        setStatus(statusRes.data.data);
+        setSystemStatus(statusRes.data.data);
       }
 
       if (logsRes.data.success) {
@@ -47,7 +61,7 @@ const Dashboard = () => {
 
   const handleDeviceAction = async (deviceId, action) => {
     try {
-      await axios.post(`/api/devices/${deviceId}/${action}`);
+      await axios.post(`/api/devices-enhanced/${deviceId}/${action}`);
       fetchData(); // Refresh data
     } catch (error) {
       console.error(`Error ${action} device:`, error);
@@ -80,26 +94,61 @@ const Dashboard = () => {
 
   const deviceColumns = [
     {
-      title: 'Device ID',
-      dataIndex: 'device_id',
-      key: 'device_id',
+      title: 'Device Name',
+      dataIndex: 'name',
+      key: 'name',
+    },
+    {
+      title: 'Device Model',
+      dataIndex: 'model_name',
+      key: 'model_name',
+      render: (model_name) => model_name || 'Custom',
+    },
+    {
+      title: 'Protocol',
+      dataIndex: 'protocol_config',
+      key: 'protocol',
+      render: (config) => config?.type?.toUpperCase() || 'Unknown',
     },
     {
       title: 'Status',
-      dataIndex: 'status',
       key: 'status',
-      render: (status) => (
-        <Space>
-          {getStatusIcon(status)}
-          <Tag color={getStatusColor(status)}>{status}</Tag>
-        </Space>
-      ),
+      render: (_, record) => {
+        let status, color, icon;
+        
+        if (!record.enabled) {
+          status = 'Disabled';
+          color = 'default';
+          icon = getStatusIcon('Disconnected');
+        } else if (record.is_running) {
+          status = record.status || 'Running';
+          color = record.status === 'Error' ? 'error' : 'success';
+          icon = getStatusIcon(record.status || 'Connected');
+        } else {
+          status = 'Stopped';
+          color = 'warning';
+          icon = getStatusIcon('Disconnected');
+        }
+        
+        return (
+          <Space>
+            {icon}
+            <Tag color={color}>{status}</Tag>
+          </Space>
+        );
+      },
+    },
+    {
+      title: 'Tags Count',
+      dataIndex: 'tags',
+      key: 'tags_count',
+      render: (tags) => tags?.length || 0,
     },
     {
       title: 'Last Update',
       dataIndex: 'last_update',
       key: 'last_update',
-      render: (time) => moment(time).format('YYYY-MM-DD HH:mm:ss'),
+      render: (lastUpdate) => lastUpdate ? moment(lastUpdate).format('YYYY-MM-DD HH:mm:ss') : 'Never',
     },
     {
       title: 'Actions',
@@ -109,7 +158,7 @@ const Dashboard = () => {
           {record.is_running ? (
             <Button
               icon={<PauseCircleOutlined />}
-              onClick={() => handleDeviceAction(record.device_id, 'stop')}
+              onClick={() => handleDeviceAction(record.id, 'stop')}
               size="small"
             >
               Stop
@@ -117,9 +166,10 @@ const Dashboard = () => {
           ) : (
             <Button
               icon={<PlayCircleOutlined />}
-              onClick={() => handleDeviceAction(record.device_id, 'start')}
+              onClick={() => handleDeviceAction(record.id, 'start')}
               size="small"
               type="primary"
+              disabled={!record.enabled}
             >
               Start
             </Button>
@@ -175,9 +225,11 @@ const Dashboard = () => {
       name: log.tag_name,
     }));
 
-  const connectedDevices = status?.devices?.filter(d => d.status === 'Connected' || d.status === 'Reading').length || 0;
-  const totalDevices = status?.devices?.length || 0;
-  const errorDevices = status?.devices?.filter(d => d.status === 'Error').length || 0;
+  const connectedDevices = devices?.filter(d => d.enabled && d.is_running).length || 0;
+  const totalDevices = devices?.length || 0;
+  const disabledDevices = devices?.filter(d => !d.enabled).length || 0;
+  const errorDevices = devices?.filter(d => d.enabled && d.status === 'Error').length || 0;
+  const totalTags = devices?.reduce((sum, device) => sum + (device.tags?.length || 0), 0) || 0;
 
   return (
     <div>
@@ -194,7 +246,7 @@ const Dashboard = () => {
         <Col span={6}>
           <Card>
             <Statistic
-              title="Connected Devices"
+              title="Running Devices"
               value={connectedDevices}
               prefix={<CheckCircleOutlined />}
               valueStyle={{ color: '#3f8600' }}
@@ -214,8 +266,8 @@ const Dashboard = () => {
         <Col span={6}>
           <Card>
             <Statistic
-              title="Total Log Entries"
-              value={status?.total_log_entries || 0}
+              title="Total Tags"
+              value={totalTags}
               prefix={<DatabaseOutlined />}
             />
           </Card>
@@ -226,10 +278,10 @@ const Dashboard = () => {
         <Col span={24}>
           <Card title="Device Status" className="status-card">
             <Table
-              dataSource={status?.devices || []}
+              dataSource={devices || []}
               columns={deviceColumns}
               loading={loading}
-              rowKey="device_id"
+              rowKey="id"
               pagination={{ pageSize: 5 }}
             />
           </Card>
