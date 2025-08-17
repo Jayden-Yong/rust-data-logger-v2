@@ -702,6 +702,66 @@ impl Database {
         Ok(templates)
     }
 
+    pub async fn create_device_model(&self, name: &str, manufacturer: Option<&str>, protocol_type: &str, description: Option<&str>) -> Result<DeviceModel> {
+        let conn = self.connection.lock().await;
+        let model_id = uuid::Uuid::new_v4().to_string();
+        let now = Utc::now();
+        let created_str = now.to_rfc3339();
+        let updated_str = now.to_rfc3339();
+
+        conn.execute(
+            "INSERT INTO device_models (id, name, description, manufacturer, protocol_type, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![
+                model_id,
+                name,
+                description,
+                manufacturer,
+                protocol_type,
+                created_str,
+                updated_str
+            ],
+        )?;
+
+        Ok(DeviceModel {
+            id: model_id,
+            name: name.to_string(),
+            description: description.map(|s| s.to_string()),
+            manufacturer: manufacturer.map(|s| s.to_string()),
+            protocol_type: protocol_type.to_string(),
+            created_at: now,
+            updated_at: now,
+        })
+    }
+
+    pub async fn create_tag_template(&self, template: &TagTemplate) -> Result<TagTemplate> {
+        let conn = self.connection.lock().await;
+
+        let result = conn.execute(
+            "INSERT INTO tag_templates 
+             (model_id, name, address, data_type, description, scaling_multiplier, scaling_offset, unit, read_only)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            params![
+                template.model_id,
+                template.name,
+                template.address as i32,
+                template.data_type,
+                template.description,
+                template.scaling_multiplier,
+                template.scaling_offset,
+                template.unit,
+                template.read_only
+            ],
+        )?;
+
+        let id = conn.last_insert_rowid();
+
+        let mut new_template = template.clone();
+        new_template.id = Some(id);
+
+        Ok(new_template)
+    }
+
     pub async fn delete_device_model(&self, model_id: &str) -> Result<()> {
         let conn = self.connection.lock().await;
         

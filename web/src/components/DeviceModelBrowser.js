@@ -14,18 +14,24 @@ import {
   Row,
   Col,
   Tooltip,
+  Form,
+  Upload,
+  message,
 } from 'antd';
 import {
   SearchOutlined,
   InfoCircleOutlined,
   TagsOutlined,
   DeleteOutlined,
+  PlusOutlined,
+  UploadOutlined,
 } from '@ant-design/icons';
 import axios from 'axios';
 
 const { Search } = Input;
 const { Option } = Select;
 const { Title, Text } = Typography;
+const { TextArea } = Input;
 
 const DeviceModelBrowser = ({ onSelectModel, visible, onClose }) => {
   const [deviceModels, setDeviceModels] = useState([]);
@@ -35,6 +41,10 @@ const DeviceModelBrowser = ({ onSelectModel, visible, onClose }) => {
   const [tagTemplates, setTagTemplates] = useState([]);
   const [searchText, setSearchText] = useState('');
   const [protocolFilter, setProtocolFilter] = useState('all');
+  const [addModelVisible, setAddModelVisible] = useState(false);
+  const [addModelLoading, setAddModelLoading] = useState(false);
+  const [csvFile, setCsvFile] = useState(null);
+  const [form] = Form.useForm();
 
   useEffect(() => {
     if (visible) {
@@ -69,6 +79,62 @@ const DeviceModelBrowser = ({ onSelectModel, visible, onClose }) => {
     } catch (error) {
       console.error('Failed to fetch tag templates:', error);
       setTagTemplates([]);
+    }
+  };
+
+  const handleAddModel = () => {
+    setAddModelVisible(true);
+  };
+
+  const handleAddModelCancel = () => {
+    setAddModelVisible(false);
+    form.resetFields();
+    setCsvFile(null);
+  };
+
+  const handleCsvUpload = ({ file, fileList }) => {
+    if (fileList.length > 0) {
+      setCsvFile(file);
+    } else {
+      setCsvFile(null);
+    }
+    return false; // Prevent auto upload
+  };
+
+  const handleAddModelSubmit = async (values) => {
+    try {
+      setAddModelLoading(true);
+      
+      const formData = new FormData();
+      formData.append('name', values.name);
+      formData.append('manufacturer', values.manufacturer || '');
+      formData.append('protocol_type', values.protocol_type);
+      formData.append('description', values.description || '');
+      
+      if (csvFile) {
+        formData.append('csv_file', csvFile);
+      }
+
+      const response = await axios.post('/api/device-models', formData, {
+        headers: {
+          'Content-Type': 'multipart/form-data',
+        },
+      });
+
+      if (response.data.success) {
+        message.success('Device model created successfully');
+        setAddModelVisible(false);
+        form.resetFields();
+        setCsvFile(null);
+        fetchDeviceModels(); // Refresh the list
+      } else {
+        throw new Error(response.data.error || 'Failed to create device model');
+      }
+    } catch (error) {
+      console.error('Error creating device model:', error);
+      message.error(`Failed to create device model: ${error.response?.data?.error || error.message}`);
+    } finally {
+      setAddModelLoading(false);
     }
   };
 
@@ -251,46 +317,56 @@ const DeviceModelBrowser = ({ onSelectModel, visible, onClose }) => {
   ];
 
   return (
-    <Modal
-      title="Device Model Browser"
-      open={visible}
-      onCancel={onClose}
-      width={1400}
-      footer={
-        selectedModel ? (
-          <Space>
-            <Button onClick={onClose}>Cancel</Button>
-            <Button type="primary" onClick={handleSelectAndClose}>
-              Select {selectedModel.name}
-            </Button>
-          </Space>
-        ) : (
-          <Button onClick={onClose}>Close</Button>
-        )
-      }
-    >
+    <>
+      <Modal
+        title="Device Model Browser"
+        open={visible}
+        onCancel={onClose}
+        width={1400}
+        footer={
+          selectedModel ? (
+            <Space>
+              <Button onClick={onClose}>Cancel</Button>
+              <Button type="primary" onClick={handleSelectAndClose}>
+                Select {selectedModel.name}
+              </Button>
+            </Space>
+          ) : (
+            <Button onClick={onClose}>Close</Button>
+          )
+        }
+      >
       <Row gutter={[16, 16]}>
-        {/* Filters */}
+        {/* Filters and Add Button */}
         <Col span={24}>
-          <Space size="middle">
-            <Search
-              placeholder="Search models..."
-              value={searchText}
-              onChange={(e) => setSearchText(e.target.value)}
-              style={{ width: 300 }}
-              prefix={<SearchOutlined />}
-            />
-            <Select
-              value={protocolFilter}
-              onChange={setProtocolFilter}
-              style={{ width: 150 }}
+          <Space size="middle" style={{ width: '100%', justifyContent: 'space-between' }}>
+            <Space size="middle">
+              <Search
+                placeholder="Search models..."
+                value={searchText}
+                onChange={(e) => setSearchText(e.target.value)}
+                style={{ width: 300 }}
+                prefix={<SearchOutlined />}
+              />
+              <Select
+                value={protocolFilter}
+                onChange={setProtocolFilter}
+                style={{ width: 150 }}
+              >
+                <Option value="all">All Protocols</Option>
+                <Option value="modbus_tcp">Modbus TCP</Option>
+                <Option value="modbus_rtu">Modbus RTU</Option>
+                <Option value="iec104">IEC 104</Option>
+                <Option value="any">Generic</Option>
+              </Select>
+            </Space>
+            <Button
+              type="primary"
+              icon={<PlusOutlined />}
+              onClick={handleAddModel}
             >
-              <Option value="all">All Protocols</Option>
-              <Option value="modbus_tcp">Modbus TCP</Option>
-              <Option value="modbus_rtu">Modbus RTU</Option>
-              <Option value="iec104">IEC 104</Option>
-              <Option value="any">Generic</Option>
-            </Select>
+              Add New Model
+            </Button>
           </Space>
         </Col>
 
@@ -371,7 +447,80 @@ const DeviceModelBrowser = ({ onSelectModel, visible, onClose }) => {
         )}
       </Row>
     </Modal>
-  );
+
+    {/* Add Model Modal */}
+    <Modal
+      title="Add New Device Model"
+      open={addModelVisible}
+      onCancel={handleAddModelCancel}
+      confirmLoading={addModelLoading}
+      onOk={() => form.submit()}
+      width={600}
+    >
+      <Form
+        form={form}
+        layout="vertical"
+        onFinish={handleAddModelSubmit}
+      >
+        <Form.Item
+          name="name"
+          label="Device Model Name"
+          rules={[
+            { required: true, message: 'Please enter device model name' },
+            { min: 2, message: 'Name must be at least 2 characters' },
+          ]}
+        >
+          <Input placeholder="e.g., PowerMeter Pro 3000" />
+        </Form.Item>
+
+        <Form.Item
+          name="manufacturer"
+          label="Manufacturer"
+          rules={[{ required: true, message: 'Please enter manufacturer name' }]}
+        >
+          <Input placeholder="e.g., Schneider Electric" />
+        </Form.Item>
+
+        <Form.Item
+          name="protocol_type"
+          label="Protocol Type"
+          rules={[{ required: true, message: 'Please select a protocol' }]}
+        >
+          <Select placeholder="Select communication protocol">
+            <Option value="modbus_tcp">Modbus TCP</Option>
+            <Option value="modbus_rtu">Modbus RTU</Option>
+            <Option value="iec104">IEC 104</Option>
+          </Select>
+        </Form.Item>
+
+        <Form.Item
+          name="description"
+          label="Description (Optional)"
+        >
+          <TextArea
+            placeholder="Brief description of the device model"
+            rows={3}
+          />
+        </Form.Item>
+
+        <Form.Item
+          label="CSV Tag Template (Optional)"
+          extra="Upload a CSV file with tag definitions. Format: name,address,data_type,unit,description"
+        >
+          <Upload
+            accept=".csv"
+            beforeUpload={() => false}
+            onChange={handleCsvUpload}
+            fileList={csvFile ? [csvFile] : []}
+            maxCount={1}
+          >
+            <Button icon={<UploadOutlined />}>Select CSV File</Button>
+          </Upload>
+        </Form.Item>
+      </Form>
+    </Modal>
+  </>
+);
 };
 
 export default DeviceModelBrowser;

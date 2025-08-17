@@ -1,0 +1,5 @@
+name,address,data_type,unit,description
+Voltage_L1,40001,float32,V,Line 1 Voltage
+Current_L1,40003,float32,A,Line 1 Current
+Power_Total,40005,float32,kW,Total Active Power
+Frequency,40007,float32,Hz,System Frequency

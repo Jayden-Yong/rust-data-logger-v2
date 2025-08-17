@@ -1,10 +1,11 @@
 use axum::{
-    extract::{Path, Query, State},
+    extract::{Path, Query, State, Multipart},
     http::StatusCode,
     response::Json,
 };
 use serde::{Deserialize, Serialize};
 use tracing::{info, error};
+use std::collections::HashMap;
 
 use crate::{AppState};
 use crate::config::{AppConfig, DeviceConfig, save_config};
@@ -225,6 +226,135 @@ pub async fn get_device_models(
             Err(StatusCode::INTERNAL_SERVER_ERROR)
         }
     }
+}
+
+#[derive(Deserialize)]
+pub struct CreateDeviceModelRequest {
+    pub name: String,
+    pub manufacturer: Option<String>,
+    pub protocol_type: String,
+    pub description: Option<String>,
+}
+
+pub async fn create_device_model(
+    State(state): State<AppState>,
+    mut multipart: Multipart,
+) -> Result<Json<ApiResponse<DeviceModel>>, StatusCode> {
+    let mut name = String::new();
+    let mut manufacturer: Option<String> = None;
+    let mut protocol_type = String::new();
+    let mut description: Option<String> = None;
+    let mut csv_data: Option<String> = None;
+
+    // Parse multipart form data
+    while let Some(field) = multipart.next_field().await.unwrap() {
+        let field_name = field.name().unwrap_or("").to_string();
+        
+        match field_name.as_str() {
+            "name" => {
+                name = field.text().await.unwrap_or_default();
+            }
+            "manufacturer" => {
+                let value = field.text().await.unwrap_or_default();
+                if !value.is_empty() {
+                    manufacturer = Some(value);
+                }
+            }
+            "protocol_type" => {
+                protocol_type = field.text().await.unwrap_or_default();
+            }
+            "description" => {
+                let value = field.text().await.unwrap_or_default();
+                if !value.is_empty() {
+                    description = Some(value);
+                }
+            }
+            "csv_file" => {
+                if let Ok(bytes) = field.bytes().await {
+                    if let Ok(text) = String::from_utf8(bytes.to_vec()) {
+                        csv_data = Some(text);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    // Validate required fields
+    if name.is_empty() || protocol_type.is_empty() {
+        return Ok(Json(ApiResponse::error("Name and protocol type are required".to_string())));
+    }
+
+    // Validate protocol type
+    if !["modbus_tcp", "modbus_rtu", "iec104"].contains(&protocol_type.as_str()) {
+        return Ok(Json(ApiResponse::error("Invalid protocol type".to_string())));
+    }
+
+    // Create device model
+    match state.database.create_device_model(&name, manufacturer.as_deref(), &protocol_type, description.as_deref()).await {
+        Ok(model) => {
+            // Process CSV if provided
+            if let Some(csv_content) = csv_data {
+                if let Err(e) = process_csv_tags(&state, &model.id, &csv_content).await {
+                    error!("Failed to process CSV: {}", e);
+                    return Ok(Json(ApiResponse::error(format!("Device model created but failed to process CSV: {}", e))));
+                }
+            }
+            
+            info!("Device model {} created successfully", model.id);
+            Ok(Json(ApiResponse::success(model)))
+        }
+        Err(e) => {
+            error!("Failed to create device model: {}", e);
+            Ok(Json(ApiResponse::error(format!("Failed to create device model: {}", e))))
+        }
+    }
+}
+
+async fn process_csv_tags(state: &AppState, device_model_id: &str, csv_content: &str) -> Result<(), Box<dyn std::error::Error>> {
+    use std::io::Cursor;
+    use csv::Reader;
+
+    let mut reader = Reader::from_reader(Cursor::new(csv_content));
+    
+    for result in reader.records() {
+        let record = result?;
+        
+        if record.len() < 3 {
+            continue; // Skip incomplete records
+        }
+        
+        let name = record.get(0).unwrap_or("").trim();
+        let address_str = record.get(1).unwrap_or("").trim();
+        let data_type = record.get(2).unwrap_or("").trim();
+        let unit = record.get(3).map(|s| s.trim()).filter(|s| !s.is_empty());
+        let description = record.get(4).map(|s| s.trim()).filter(|s| !s.is_empty());
+        
+        if name.is_empty() || address_str.is_empty() || data_type.is_empty() {
+            continue;
+        }
+        
+        let address: u16 = address_str.parse().unwrap_or(0);
+        
+        let tag_template = TagTemplate {
+            id: None,
+            model_id: device_model_id.to_string(),
+            name: name.to_string(),
+            address,
+            data_type: data_type.to_string(),
+            description: description.map(|s| s.to_string()),
+            scaling_multiplier: 1.0,
+            scaling_offset: 0.0,
+            unit: unit.map(|s| s.to_string()),
+            read_only: false,
+        };
+        
+        if let Err(e) = state.database.create_tag_template(&tag_template).await {
+            error!("Failed to create tag template {}: {}", name, e);
+        }
+    }
+    
+    Ok(())
 }
 
 pub async fn get_device_model(
