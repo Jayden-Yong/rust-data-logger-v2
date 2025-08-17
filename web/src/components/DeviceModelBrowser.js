@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import {
   Card,
   Table,
@@ -9,11 +9,9 @@ import {
   Button,
   Modal,
   Descriptions,
-  List,
   Typography,
   Row,
   Col,
-  Tooltip,
   Form,
   Upload,
   message,
@@ -46,6 +44,26 @@ const DeviceModelBrowser = ({ onSelectModel, visible, onClose }) => {
   const [csvFile, setCsvFile] = useState(null);
   const [form] = Form.useForm();
 
+  const filterModels = useCallback(() => {
+    let filtered = deviceModels;
+
+    // Filter by search text
+    if (searchText) {
+      filtered = filtered.filter(model =>
+        model.name.toLowerCase().includes(searchText.toLowerCase()) ||
+        (model.manufacturer && model.manufacturer.toLowerCase().includes(searchText.toLowerCase())) ||
+        (model.description && model.description.toLowerCase().includes(searchText.toLowerCase()))
+      );
+    }
+
+    // Filter by protocol
+    if (protocolFilter !== 'all') {
+      filtered = filtered.filter(model => model.protocol_type === protocolFilter);
+    }
+
+    setFilteredModels(filtered);
+  }, [deviceModels, searchText, protocolFilter]);
+
   useEffect(() => {
     if (visible) {
       fetchDeviceModels();
@@ -54,7 +72,7 @@ const DeviceModelBrowser = ({ onSelectModel, visible, onClose }) => {
 
   useEffect(() => {
     filterModels();
-  }, [deviceModels, searchText, protocolFilter]);
+  }, [filterModels]);
 
   const fetchDeviceModels = async () => {
     try {
@@ -72,9 +90,46 @@ const DeviceModelBrowser = ({ onSelectModel, visible, onClose }) => {
 
   const fetchTagTemplates = async (modelId) => {
     try {
-      const response = await axios.get(`/api/device-models/${modelId}/tags`);
-      if (response.data.success) {
-        setTagTemplates(response.data.data);
+      // First get the model details to check protocol type
+      const model = deviceModels.find(m => m.id === modelId);
+      
+      if (model && model.protocol_type === 'modbus_tcp') {
+        // Use new Modbus TCP API - search by exact device model name
+        try {
+          const response = await axios.get(`/api/modbus-tcp-tag-registers?device_model=${encodeURIComponent(model.name)}`);
+          
+          if (response.data.success && response.data.data.length > 0) {
+            console.log(`Found ${response.data.data.length} tag registers for device model: ${model.name}`);
+            
+            // Transform the data to match the expected format for display
+            const transformedData = response.data.data.map(item => ({
+              id: item.id,
+              name: item.data_label,
+              address: item.address,
+              data_type: item.modbus_type,
+              description: `${item.ava_type}${item.mppt ? ` - MPPT ${item.mppt}` : ''}${item.input ? ` - Input ${item.input}` : ''} (${item.device_model})`,
+              scaling_multiplier: item.divider,
+              scaling_offset: 0,
+              unit: item.register_type,
+              read_only: item.register_type === 'input'
+            }));
+            setTagTemplates(transformedData);
+            
+            console.log(`Loaded ${transformedData.length} tag templates for device model: ${model.name}`);
+          } else {
+            console.log(`No tag registers found for device model: ${model.name}`);
+            setTagTemplates([]);
+          }
+        } catch (error) {
+          console.error('Error fetching modbus TCP tag registers:', error);
+          setTagTemplates([]);
+        }
+      } else {
+        // Use legacy API for other protocols
+        const response = await axios.get(`/api/device-models/${modelId}/tags`);
+        if (response.data.success) {
+          setTagTemplates(response.data.data);
+        }
       }
     } catch (error) {
       console.error('Failed to fetch tag templates:', error);
@@ -105,13 +160,36 @@ const DeviceModelBrowser = ({ onSelectModel, visible, onClose }) => {
     try {
       setAddModelLoading(true);
       
+      // For Modbus TCP with CSV file, first upload the CSV to get the tag registers
+      if (values.protocol_type === 'modbus_tcp' && csvFile) {
+        const csvFormData = new FormData();
+        csvFormData.append('csv_file', csvFile);
+        csvFormData.append('device_model_name', values.name); // Send the device model name from the form
+        csvFormData.append('manufacturer', values.manufacturer); // Send the manufacturer from the form
+
+        const csvResponse = await axios.post('/api/modbus-tcp-tag-registers/upload-csv', csvFormData, {
+          headers: {
+            'Content-Type': 'multipart/form-data',
+          },
+        });
+
+        if (csvResponse.data.success) {
+          message.success(`Successfully uploaded CSV: ${csvResponse.data.message}`);
+          message.info(`${csvResponse.data.summary}`);
+        } else {
+          throw new Error(csvResponse.data.message || 'Failed to upload CSV');
+        }
+      }
+      
+      // Create the device model using the existing multipart API
       const formData = new FormData();
       formData.append('name', values.name);
       formData.append('manufacturer', values.manufacturer || '');
       formData.append('protocol_type', values.protocol_type);
       formData.append('description', values.description || '');
       
-      if (csvFile) {
+      // For non-Modbus TCP protocols, still include the CSV file for legacy processing
+      if (values.protocol_type !== 'modbus_tcp' && csvFile) {
         formData.append('csv_file', csvFile);
       }
 
@@ -136,26 +214,6 @@ const DeviceModelBrowser = ({ onSelectModel, visible, onClose }) => {
     } finally {
       setAddModelLoading(false);
     }
-  };
-
-  const filterModels = () => {
-    let filtered = deviceModels;
-
-    // Filter by search text
-    if (searchText) {
-      filtered = filtered.filter(model =>
-        model.name.toLowerCase().includes(searchText.toLowerCase()) ||
-        (model.manufacturer && model.manufacturer.toLowerCase().includes(searchText.toLowerCase())) ||
-        (model.description && model.description.toLowerCase().includes(searchText.toLowerCase()))
-      );
-    }
-
-    // Filter by protocol
-    if (protocolFilter !== 'all') {
-      filtered = filtered.filter(model => model.protocol_type === protocolFilter);
-    }
-
-    setFilteredModels(filtered);
   };
 
   const handleModelSelect = (model) => {
@@ -228,25 +286,16 @@ const DeviceModelBrowser = ({ onSelectModel, visible, onClose }) => {
 
   const columns = [
     {
-      title: 'Model Name',
-      dataIndex: 'name',
-      key: 'name',
-      render: (text, record) => (
-        <Space direction="vertical" size="small">
-          <Text strong>{text}</Text>
-          {record.description && (
-            <Text type="secondary" style={{ fontSize: '12px' }}>
-              {record.description}
-            </Text>
-          )}
-        </Space>
-      ),
-    },
-    {
       title: 'Manufacturer',
       dataIndex: 'manufacturer',
       key: 'manufacturer',
       render: (text) => text || 'Various',
+    },
+    {
+      title: 'Device Models',
+      dataIndex: 'name',
+      key: 'name',
+      render: (text) => <Text strong>{text}</Text>,
     },
     {
       title: 'Protocol',
@@ -505,7 +554,7 @@ const DeviceModelBrowser = ({ onSelectModel, visible, onClose }) => {
 
         <Form.Item
           label="CSV Tag Template (Optional)"
-          extra="Upload a CSV file with tag definitions. Format: name,address,data_type,unit,description"
+          extra="For Modbus TCP: Upload CSV with format: Device Brand,Device Model,AVA Type,MPPT,INPUT,Data Label,Address,Size,Modbus Type,Divider,Register Type. Note: Device Model name in CSV should match the Model Name above for best results."
         >
           <Upload
             accept=".csv"

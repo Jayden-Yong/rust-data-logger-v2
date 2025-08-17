@@ -5,11 +5,11 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 use tracing::{info, error};
-use std::collections::HashMap;
 
 use crate::{AppState};
 use crate::config::{AppConfig, DeviceConfig, save_config};
-use crate::database::{LogEntry, DeviceModel, TagTemplate, DeviceInstance, DeviceTag, ScheduleGroup};
+use crate::database::{LogEntry, DeviceModel, TagTemplate, DeviceInstance, DeviceTag, ScheduleGroup, ModbusTcpTagRegister};
+use crate::csv_parser::ModbusTcpCsvParserService;
 
 #[derive(Serialize, Deserialize)]
 pub struct ApiResponse<T> {
@@ -50,7 +50,7 @@ pub async fn get_config(
 }
 
 pub async fn update_config(
-    State(state): State<AppState>,
+    State(_state): State<AppState>,
     Json(new_config): Json<AppConfig>,
 ) -> Result<Json<ApiResponse<String>>, StatusCode> {
     match save_config(&new_config).await {
@@ -744,4 +744,215 @@ pub async fn delete_schedule_group(
 
     info!("Deleted schedule group {}", group_id);
     Ok(Json(ApiResponse::success("Schedule group deleted successfully".to_string())))
+}
+
+// Modbus TCP Tag Register API Endpoints
+
+#[derive(Serialize, Deserialize)]
+pub struct CsvUploadResponse {
+    pub success: bool,
+    pub message: String,
+    pub records_processed: u64,
+    pub device_brand: String,
+    pub device_model: String,
+    pub summary: String,
+    pub validation_errors: Vec<String>,
+}
+
+#[derive(Deserialize)]
+pub struct ModbusTcpTagQuery {
+    pub device_brand: Option<String>,
+    pub device_model: Option<String>,
+    pub ava_type: Option<String>,
+}
+
+pub async fn upload_modbus_tcp_csv_tags(
+    State(state): State<AppState>,
+    mut multipart: Multipart,
+) -> Result<Json<CsvUploadResponse>, StatusCode> {
+    let csv_parser = ModbusTcpCsvParserService::new();
+    let mut csv_data: Option<bytes::Bytes> = None;
+    let mut device_model_name: Option<String> = None;
+    let mut manufacturer: Option<String> = None;
+    
+    // Parse multipart form to extract CSV file, device model name, and manufacturer
+    while let Some(field) = multipart.next_field().await.unwrap() {
+        if let Some(name) = field.name() {
+            match name {
+                "csv_file" => {
+                    csv_data = Some(field.bytes().await.unwrap());
+                }
+                "device_model_name" => {
+                    if let Ok(text) = field.text().await {
+                        device_model_name = Some(text);
+                    }
+                }
+                "manufacturer" => {
+                    if let Ok(text) = field.text().await {
+                        manufacturer = Some(text);
+                    }
+                }
+                _ => {
+                    // Ignore other fields
+                }
+            }
+        }
+    }
+    
+    let csv_data = match csv_data {
+        Some(data) => data,
+        None => {
+            return Ok(Json(CsvUploadResponse {
+                success: false,
+                message: "No CSV file found in request".to_string(),
+                records_processed: 0,
+                device_brand: "".to_string(),
+                device_model: "".to_string(),
+                summary: "".to_string(),
+                validation_errors: vec!["No file uploaded".to_string()],
+            }));
+        }
+    };
+    
+    let device_model_name = match device_model_name {
+        Some(name) if !name.trim().is_empty() => name.trim().to_string(),
+        _ => {
+            return Ok(Json(CsvUploadResponse {
+                success: false,
+                message: "Device model name is required".to_string(),
+                records_processed: 0,
+                device_brand: "".to_string(),
+                device_model: "".to_string(),
+                summary: "".to_string(),
+                validation_errors: vec!["Device model name not provided".to_string()],
+            }));
+        }
+    };
+    
+    let manufacturer = match manufacturer {
+        Some(name) if !name.trim().is_empty() => name.trim().to_string(),
+        _ => {
+            return Ok(Json(CsvUploadResponse {
+                success: false,
+                message: "Manufacturer name is required".to_string(),
+                records_processed: 0,
+                device_brand: "".to_string(),
+                device_model: "".to_string(),
+                summary: "".to_string(),
+                validation_errors: vec!["Manufacturer name not provided".to_string()],
+            }));
+        }
+    };
+    
+    // Validate CSV headers first
+    if let Err(e) = csv_parser.validate_csv_headers(csv_data.as_ref()) {
+        return Ok(Json(CsvUploadResponse {
+            success: false,
+            message: format!("CSV validation failed: {}", e),
+            records_processed: 0,
+            device_brand: "".to_string(),
+            device_model: "".to_string(),
+            summary: "".to_string(),
+            validation_errors: vec![e.to_string()],
+        }));
+    }
+
+    // Parse CSV with the provided device model name and manufacturer
+    match csv_parser.parse_csv_with_device_model_and_manufacturer(csv_data.as_ref(), &device_model_name, &manufacturer) {
+        Ok(tag_registers) => {
+            if tag_registers.is_empty() {
+                return Ok(Json(CsvUploadResponse {
+                    success: false,
+                    message: "No valid records found in CSV".to_string(),
+                    records_processed: 0,
+                    device_brand: "".to_string(),
+                    device_model: device_model_name.clone(),
+                    summary: "".to_string(),
+                    validation_errors: vec!["Empty CSV or no valid records".to_string()],
+                }));
+            }
+
+            // Validate record data
+            if let Err(e) = csv_parser.validate_record_data(&tag_registers) {
+                return Ok(Json(CsvUploadResponse {
+                    success: false,
+                    message: format!("Data validation failed: {}", e),
+                    records_processed: 0,
+                    device_brand: "".to_string(),
+                    device_model: device_model_name.clone(),
+                    summary: "".to_string(),
+                    validation_errors: vec![e.to_string()],
+                }));
+            }
+
+            let device_brand = tag_registers[0].device_brand.clone();
+            let summary = csv_parser.get_summary(&tag_registers);
+
+            // Insert records
+            match state.database.bulk_insert_modbus_tcp_tag_registers(tag_registers).await {
+                Ok(count) => {
+                    info!("Successfully inserted {} Modbus TCP tag registers for {} {}", 
+                        count, device_brand, device_model_name);
+                    
+                    return Ok(Json(CsvUploadResponse {
+                        success: true,
+                        message: format!("Successfully processed {} records for {} {}", 
+                            count, device_brand, device_model_name),
+                        records_processed: count,
+                        device_brand,
+                        device_model: device_model_name.clone(),
+                        summary,
+                        validation_errors: vec![],
+                    }));
+                }
+                Err(e) => {
+                    error!("Failed to insert Modbus TCP tag registers: {}", e);
+                    return Ok(Json(CsvUploadResponse {
+                        success: false,
+                        message: format!("Database error: {}", e),
+                        records_processed: 0,
+                        device_brand,
+                        device_model: device_model_name.clone(),
+                        summary,
+                        validation_errors: vec![e.to_string()],
+                    }));
+                }
+            }
+        }
+        Err(e) => {
+            error!("Failed to parse CSV: {}", e);
+            return Ok(Json(CsvUploadResponse {
+                success: false,
+                message: format!("Failed to parse CSV: {}", e),
+                records_processed: 0,
+                device_brand: "".to_string(),
+                device_model: device_model_name.clone(),
+                summary: "".to_string(),
+                validation_errors: vec![e.to_string()],
+            }));
+        }
+    }
+}
+
+pub async fn get_modbus_tcp_tag_registers(
+    State(state): State<AppState>,
+    Query(params): Query<ModbusTcpTagQuery>,
+) -> Result<Json<ApiResponse<Vec<ModbusTcpTagRegister>>>, StatusCode> {
+    let result = match (params.device_brand, params.device_model) {
+        (Some(brand), Some(model)) => {
+            state.database.get_modbus_tcp_tag_registers_by_device(&brand, &model).await
+        }
+        (None, Some(model)) => {
+            state.database.get_modbus_tcp_tag_registers_by_model(&model).await
+        }
+        _ => state.database.get_all_modbus_tcp_tag_registers().await,
+    };
+
+    match result {
+        Ok(tag_registers) => Ok(Json(ApiResponse::success(tag_registers))),
+        Err(e) => {
+            error!("Database error: {}", e);
+            Err(StatusCode::INTERNAL_SERVER_ERROR)
+        }
+    }
 }

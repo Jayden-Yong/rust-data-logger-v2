@@ -1,0 +1,3 @@
+Device Brand,Device Model,AVA Type,MPPT,INPUT,Data Label,Address,Size,Modbus Type,Divider,Register Type
+Sungrow,SG150CX,Inverter,,,Daily Yield,5002,1,U16,10,input
+Sungrow,SG150CX,String,,,String Current,7012,1,U16,100,input

@@ -1,6 +1,6 @@
 use axum::{
     response::{Html, IntoResponse},
-    routing::{get, post, put, delete, any, MethodRouter},
+    routing::{get, post},
     Router,
 };
 use socketioxide::SocketIo;
@@ -16,6 +16,7 @@ mod database;
 mod logging;
 mod api;
 mod websocket;
+mod csv_parser;
 
 use config::{AppConfig, load_config};
 use database::Database;
@@ -135,6 +136,10 @@ async fn main() -> anyhow::Result<()> {
         // Schedule group management
         .route("/api/schedule-groups", get(api::get_schedule_groups).post(api::create_schedule_group))
         .route("/api/schedule-groups/:id", get(api::get_schedule_group).put(api::update_schedule_group).delete(api::delete_schedule_group))
+        
+        // Modbus TCP tag register management
+        .route("/api/modbus-tcp-tag-registers", get(api::get_modbus_tcp_tag_registers))
+        .route("/api/modbus-tcp-tag-registers/upload-csv", post(api::upload_modbus_tcp_csv_tags))
         
         // WebSocket endpoint
         .route("/socket.io/*path", get(websocket::socket_handler))

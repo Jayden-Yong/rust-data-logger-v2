@@ -13,7 +13,6 @@ import {
   Row,
   Col,
   Divider,
-  Descriptions,
   Tag,
   InputNumber,
   Tooltip,
@@ -26,14 +25,12 @@ import {
   InfoCircleOutlined,
   SettingOutlined,
   SearchOutlined,
-  ApiOutlined,
 } from '@ant-design/icons';
 import axios from 'axios';
 import DeviceModelBrowser from './DeviceModelBrowser';
 
 const { Option } = Select;
-const { TextArea } = Input;
-const { Title, Text } = Typography;
+const { Text } = Typography;
 
 const EnhancedDeviceConfig = () => {
   const [devices, setDevices] = useState([]);
@@ -269,28 +266,6 @@ const EnhancedDeviceConfig = () => {
   const removeTag = (index) => {
     const updatedTags = deviceTags.filter((_, i) => i !== index);
     setDeviceTags(updatedTags);
-  };
-
-  const handleModelBrowserSelect = (model, templates) => {
-    setSelectedModel(model.id);
-    form.setFieldsValue({ model_id: model.id });
-    
-    // Convert templates to device tags
-    const defaultScheduleGroup = scheduleGroups.find(group => group.id === 'medium_freq') || scheduleGroups[0];
-    const newTags = templates.map(template => ({
-      name: template.name,
-      address: template.address,
-      data_type: template.data_type,
-      description: template.description,
-      scaling_multiplier: template.scaling_multiplier,
-      scaling_offset: template.scaling_offset,
-      unit: template.unit,
-      read_only: template.read_only,
-      enabled: true,
-      schedule_group_id: defaultScheduleGroup?.id || null,
-    }));
-    setDeviceTags(newTags);
-    setModelBrowserVisible(false);
   };
 
   const getProtocolTypeColor = (type) => {

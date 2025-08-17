@@ -1,0 +1,5 @@
+Device Brand,Device Model,AVA Type,MPPT,INPUT,Data Label,Address,Size,Modbus Type,Divider,Register Type
+Sungrow,SG150CX,Inverter,1,DC,Voltage L1,40001,2,Holding Register,1,Float32
+Sungrow,SG150CX,Inverter,1,DC,Current L1,40003,2,Holding Register,1,Float32
+Sungrow,SG150CX,Inverter,1,DC,Power Total,40005,2,Holding Register,1,Float32
+Sungrow,SG150CX,Inverter,1,DC,Frequency,40007,2,Holding Register,1,Float32

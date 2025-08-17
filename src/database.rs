@@ -92,6 +92,65 @@ pub struct ScheduleGroup {
     pub updated_at: DateTime<Utc>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ModbusTcpTagRegister {
+    pub id: Option<i64>,
+    pub device_brand: String,
+    pub device_model: String,
+    pub ava_type: String,
+    pub mppt: Option<i32>,
+    pub input: Option<i32>,
+    pub data_label: String,
+    pub address: i32,
+    pub size: i32,
+    pub modbus_type: String,
+    pub divider: f64,
+    pub register_type: String,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CreateModbusTcpTagRegister {
+    pub device_brand: String,
+    pub device_model: String,
+    pub ava_type: String,
+    pub mppt: Option<i32>,
+    pub input: Option<i32>,
+    pub data_label: String,
+    pub address: i32,
+    pub size: i32,
+    pub modbus_type: String,
+    pub divider: f64,
+    pub register_type: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CsvModbusTcpTagRecord {
+    #[serde(rename = "Device Brand")]
+    pub device_brand: String,
+    #[serde(rename = "Device Model")]
+    pub device_model: String,
+    #[serde(rename = "AVA Type")]
+    pub ava_type: String,
+    #[serde(rename = "MPPT")]
+    pub mppt: String,
+    #[serde(rename = "INPUT")]
+    pub input: String,
+    #[serde(rename = "Data Label")]
+    pub data_label: String,
+    #[serde(rename = "Address")]
+    pub address: i32,
+    #[serde(rename = "Size")]
+    pub size: i32,
+    #[serde(rename = "Modbus Type")]
+    pub modbus_type: String,
+    #[serde(rename = "Divider")]
+    pub divider: f64,
+    #[serde(rename = "Register Type")]
+    pub register_type: String,
+}
+
 pub struct Database {
     connection: Arc<Mutex<Connection>>,
 }
@@ -210,6 +269,28 @@ impl Database {
             [],
         )?;
 
+        // Modbus TCP tag registers table
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS modbus_tcp_tag_registers (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                device_brand TEXT NOT NULL,
+                device_model TEXT NOT NULL,
+                ava_type TEXT NOT NULL,
+                mppt INTEGER,
+                input INTEGER,
+                data_label TEXT NOT NULL,
+                address INTEGER NOT NULL,
+                size INTEGER NOT NULL,
+                modbus_type TEXT NOT NULL,
+                divider REAL NOT NULL DEFAULT 1.0,
+                register_type TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                UNIQUE(device_brand, device_model, address, mppt, input)
+            )",
+            [],
+        )?;
+
         // Create indexes for better performance
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_log_entries_device_timestamp 
@@ -235,6 +316,27 @@ impl Database {
 
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_devices_model ON devices(model_id)",
+            [],
+        )?;
+
+        // Modbus TCP tag registers indexes
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_modbus_tcp_device ON modbus_tcp_tag_registers(device_brand, device_model)",
+            [],
+        )?;
+
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_modbus_tcp_address ON modbus_tcp_tag_registers(address)",
+            [],
+        )?;
+
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_modbus_tcp_ava_type ON modbus_tcp_tag_registers(ava_type)",
+            [],
+        )?;
+
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_modbus_tcp_mppt_input ON modbus_tcp_tag_registers(mppt, input)",
             [],
         )?;
 
@@ -737,7 +839,7 @@ impl Database {
     pub async fn create_tag_template(&self, template: &TagTemplate) -> Result<TagTemplate> {
         let conn = self.connection.lock().await;
 
-        let result = conn.execute(
+        let _result = conn.execute(
             "INSERT INTO tag_templates 
              (model_id, name, address, data_type, description, scaling_multiplier, scaling_offset, unit, read_only)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
@@ -787,7 +889,7 @@ impl Database {
         
         // Finally, delete the device model itself
         let mut stmt = conn.prepare("DELETE FROM device_models WHERE id = ?1")?;
-        let deleted_models = stmt.execute([model_id])?;
+        let _deleted_models = stmt.execute([model_id])?;
         
         // Commit the transaction
         conn.execute("COMMIT", [])?;
@@ -1127,5 +1229,244 @@ impl Database {
         )?;
 
         Ok(())
+    }
+
+    // Modbus TCP Tag Register CRUD operations
+    pub async fn create_modbus_tcp_tag_register(&self, tag_register: &CreateModbusTcpTagRegister) -> Result<ModbusTcpTagRegister> {
+        let conn = self.connection.lock().await;
+        let now = Utc::now();
+        let created_str = now.to_rfc3339();
+        let updated_str = now.to_rfc3339();
+
+        conn.execute(
+            "INSERT INTO modbus_tcp_tag_registers (
+                device_brand, device_model, ava_type, mppt, input, data_label, 
+                address, size, modbus_type, divider, register_type, created_at, updated_at
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+            params![
+                tag_register.device_brand,
+                tag_register.device_model,
+                tag_register.ava_type,
+                tag_register.mppt,
+                tag_register.input,
+                tag_register.data_label,
+                tag_register.address,
+                tag_register.size,
+                tag_register.modbus_type,
+                tag_register.divider,
+                tag_register.register_type,
+                created_str,
+                updated_str
+            ],
+        )?;
+
+        let id = conn.last_insert_rowid();
+
+        Ok(ModbusTcpTagRegister {
+            id: Some(id),
+            device_brand: tag_register.device_brand.clone(),
+            device_model: tag_register.device_model.clone(),
+            ava_type: tag_register.ava_type.clone(),
+            mppt: tag_register.mppt,
+            input: tag_register.input,
+            data_label: tag_register.data_label.clone(),
+            address: tag_register.address,
+            size: tag_register.size,
+            modbus_type: tag_register.modbus_type.clone(),
+            divider: tag_register.divider,
+            register_type: tag_register.register_type.clone(),
+            created_at: now,
+            updated_at: now,
+        })
+    }
+
+    pub async fn bulk_insert_modbus_tcp_tag_registers(&self, tag_registers: Vec<CreateModbusTcpTagRegister>) -> Result<u64> {
+        let conn = self.connection.lock().await;
+        let tx = conn.unchecked_transaction()?;
+        let now = Utc::now();
+        let created_str = now.to_rfc3339();
+        let updated_str = now.to_rfc3339();
+
+        let mut inserted_count = 0;
+
+        for tag_register in tag_registers {
+            tx.execute(
+                "INSERT OR REPLACE INTO modbus_tcp_tag_registers (
+                    device_brand, device_model, ava_type, mppt, input, data_label, 
+                    address, size, modbus_type, divider, register_type, created_at, updated_at
+                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+                params![
+                    tag_register.device_brand,
+                    tag_register.device_model,
+                    tag_register.ava_type,
+                    tag_register.mppt,
+                    tag_register.input,
+                    tag_register.data_label,
+                    tag_register.address,
+                    tag_register.size,
+                    tag_register.modbus_type,
+                    tag_register.divider,
+                    tag_register.register_type,
+                    created_str,
+                    updated_str
+                ],
+            )?;
+            
+            inserted_count += 1;
+        }
+
+        tx.commit()?;
+        Ok(inserted_count)
+    }
+
+    pub async fn get_modbus_tcp_tag_registers_by_device(&self, device_brand: &str, device_model: &str) -> Result<Vec<ModbusTcpTagRegister>> {
+        let conn = self.connection.lock().await;
+        
+        let mut stmt = conn.prepare(
+            "SELECT id, device_brand, device_model, ava_type, mppt, input, data_label, 
+                    address, size, modbus_type, divider, register_type, created_at, updated_at 
+             FROM modbus_tcp_tag_registers 
+             WHERE device_brand = ?1 AND device_model = ?2 
+             ORDER BY ava_type, mppt, input, address ASC"
+        )?;
+
+        let rows = stmt.query_map([device_brand, device_model], |row| {
+            let created_str: String = row.get(12)?;
+            let updated_str: String = row.get(13)?;
+            let created_at = DateTime::parse_from_rfc3339(&created_str)
+                .map_err(|_| rusqlite::Error::InvalidColumnType(12, "created_at".to_string(), rusqlite::types::Type::Text))?
+                .with_timezone(&Utc);
+            let updated_at = DateTime::parse_from_rfc3339(&updated_str)
+                .map_err(|_| rusqlite::Error::InvalidColumnType(13, "updated_at".to_string(), rusqlite::types::Type::Text))?
+                .with_timezone(&Utc);
+
+            Ok(ModbusTcpTagRegister {
+                id: Some(row.get(0)?),
+                device_brand: row.get(1)?,
+                device_model: row.get(2)?,
+                ava_type: row.get(3)?,
+                mppt: row.get(4)?,
+                input: row.get(5)?,
+                data_label: row.get(6)?,
+                address: row.get(7)?,
+                size: row.get(8)?,
+                modbus_type: row.get(9)?,
+                divider: row.get(10)?,
+                register_type: row.get(11)?,
+                created_at,
+                updated_at,
+            })
+        })?;
+
+        let mut tag_registers = Vec::new();
+        for row in rows {
+            tag_registers.push(row?);
+        }
+
+        Ok(tag_registers)
+    }
+
+    pub async fn get_modbus_tcp_tag_registers_by_model(&self, device_model: &str) -> Result<Vec<ModbusTcpTagRegister>> {
+        let conn = self.connection.lock().await;
+        
+        let mut stmt = conn.prepare(
+            "SELECT id, device_brand, device_model, ava_type, mppt, input, data_label, 
+                    address, size, modbus_type, divider, register_type, created_at, updated_at 
+             FROM modbus_tcp_tag_registers 
+             WHERE device_model = ?1 
+             ORDER BY ava_type, mppt, input, address ASC"
+        )?;
+
+        let rows = stmt.query_map([device_model], |row| {
+            let created_str: String = row.get(12)?;
+            let updated_str: String = row.get(13)?;
+            let created_at = DateTime::parse_from_rfc3339(&created_str)
+                .map_err(|_| rusqlite::Error::InvalidColumnType(12, "created_at".to_string(), rusqlite::types::Type::Text))?
+                .with_timezone(&Utc);
+            let updated_at = DateTime::parse_from_rfc3339(&updated_str)
+                .map_err(|_| rusqlite::Error::InvalidColumnType(13, "updated_at".to_string(), rusqlite::types::Type::Text))?
+                .with_timezone(&Utc);
+
+            Ok(ModbusTcpTagRegister {
+                id: Some(row.get(0)?),
+                device_brand: row.get(1)?,
+                device_model: row.get(2)?,
+                ava_type: row.get(3)?,
+                mppt: row.get(4)?,
+                input: row.get(5)?,
+                data_label: row.get(6)?,
+                address: row.get(7)?,
+                size: row.get(8)?,
+                modbus_type: row.get(9)?,
+                divider: row.get(10)?,
+                register_type: row.get(11)?,
+                created_at,
+                updated_at,
+            })
+        })?;
+
+        let mut tag_registers = Vec::new();
+        for row in rows {
+            tag_registers.push(row?);
+        }
+
+        Ok(tag_registers)
+    }
+
+    pub async fn get_all_modbus_tcp_tag_registers(&self) -> Result<Vec<ModbusTcpTagRegister>> {
+        let conn = self.connection.lock().await;
+        
+        let mut stmt = conn.prepare(
+            "SELECT id, device_brand, device_model, ava_type, mppt, input, data_label, 
+                    address, size, modbus_type, divider, register_type, created_at, updated_at 
+             FROM modbus_tcp_tag_registers 
+             ORDER BY device_brand, device_model, ava_type, mppt, input, address ASC"
+        )?;
+
+        let rows = stmt.query_map([], |row| {
+            let created_str: String = row.get(12)?;
+            let updated_str: String = row.get(13)?;
+            let created_at = DateTime::parse_from_rfc3339(&created_str)
+                .map_err(|_| rusqlite::Error::InvalidColumnType(12, "created_at".to_string(), rusqlite::types::Type::Text))?
+                .with_timezone(&Utc);
+            let updated_at = DateTime::parse_from_rfc3339(&updated_str)
+                .map_err(|_| rusqlite::Error::InvalidColumnType(13, "updated_at".to_string(), rusqlite::types::Type::Text))?
+                .with_timezone(&Utc);
+
+            Ok(ModbusTcpTagRegister {
+                id: Some(row.get(0)?),
+                device_brand: row.get(1)?,
+                device_model: row.get(2)?,
+                ava_type: row.get(3)?,
+                mppt: row.get(4)?,
+                input: row.get(5)?,
+                data_label: row.get(6)?,
+                address: row.get(7)?,
+                size: row.get(8)?,
+                modbus_type: row.get(9)?,
+                divider: row.get(10)?,
+                register_type: row.get(11)?,
+                created_at,
+                updated_at,
+            })
+        })?;
+
+        let mut tag_registers = Vec::new();
+        for row in rows {
+            tag_registers.push(row?);
+        }
+
+        Ok(tag_registers)
+    }
+
+    pub async fn delete_modbus_tcp_tag_registers_by_device(&self, device_brand: &str, device_model: &str) -> Result<u64> {
+        let conn = self.connection.lock().await;
+        
+        let result = conn.execute(
+            "DELETE FROM modbus_tcp_tag_registers WHERE device_brand = ?1 AND device_model = ?2",
+            params![device_brand, device_model],
+        )?;
+
+        Ok(result as u64)
     }
 }
