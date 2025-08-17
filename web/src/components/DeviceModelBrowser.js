@@ -19,6 +19,7 @@ import {
   SearchOutlined,
   InfoCircleOutlined,
   TagsOutlined,
+  DeleteOutlined,
 } from '@ant-design/icons';
 import axios from 'axios';
 
@@ -103,6 +104,52 @@ const DeviceModelBrowser = ({ onSelectModel, visible, onClose }) => {
     onClose();
   };
 
+  const handleDeleteModel = async (modelId) => {
+    try {
+      setLoading(true);
+      const response = await axios.post(`/api/device-models/${modelId}/delete`);
+      
+      if (response.data.success) {
+        Modal.success({
+          title: 'Success',
+          content: 'Device model deleted successfully',
+        });
+        // Remove the deleted model from the local state
+        setDeviceModels(prev => prev.filter(model => model.id !== modelId));
+        setFilteredModels(prev => prev.filter(model => model.id !== modelId));
+        
+        // Clear selected model if it was the deleted one
+        if (selectedModel && selectedModel.id === modelId) {
+          setSelectedModel(null);
+          setTagTemplates([]);
+        }
+      } else {
+        throw new Error(response.data.error || 'Failed to delete device model');
+      }
+    } catch (error) {
+      console.error('Error deleting device model:', error);
+      Modal.error({
+        title: 'Error',
+        content: `Failed to delete device model: ${error.response?.data?.error || error.message}`,
+      });
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const showDeleteConfirm = (model) => {
+    Modal.confirm({
+      title: 'Delete Device Model',
+      content: `Are you sure you want to delete "${model.name}"? This action cannot be undone and will also delete all associated tag templates.`,
+      okText: 'Delete',
+      okType: 'danger',
+      cancelText: 'Cancel',
+      onOk() {
+        handleDeleteModel(model.id);
+      },
+    });
+  };
+
   const getProtocolColor = (protocol) => {
     const colors = {
       modbus_tcp: 'blue',
@@ -156,6 +203,14 @@ const DeviceModelBrowser = ({ onSelectModel, visible, onClose }) => {
             onClick={() => handleModelSelect(record)}
           >
             View Details
+          </Button>
+          <Button
+            type="text"
+            danger
+            icon={<DeleteOutlined />}
+            onClick={() => showDeleteConfirm(record)}
+          >
+            Delete
           </Button>
         </Space>
       ),

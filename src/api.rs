@@ -241,6 +241,26 @@ pub async fn get_device_model(
     }
 }
 
+pub async fn delete_device_model(
+    State(state): State<AppState>,
+    Path(model_id): Path<String>,
+) -> Result<Json<ApiResponse<()>>, StatusCode> {
+    match state.database.delete_device_model(&model_id).await {
+        Ok(_) => {
+            info!("Device model {} deleted successfully", model_id);
+            Ok(Json(ApiResponse::success(())))
+        }
+        Err(e) => {
+            error!("Failed to delete device model {}: {}", model_id, e);
+            if e.to_string().contains("not found") {
+                Err(StatusCode::NOT_FOUND)
+            } else {
+                Err(StatusCode::INTERNAL_SERVER_ERROR)
+            }
+        }
+    }
+}
+
 pub async fn get_tag_templates(
     State(state): State<AppState>,
     Path(model_id): Path<String>,

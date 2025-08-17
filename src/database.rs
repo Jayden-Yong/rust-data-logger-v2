@@ -702,6 +702,41 @@ impl Database {
         Ok(templates)
     }
 
+    pub async fn delete_device_model(&self, model_id: &str) -> Result<()> {
+        let conn = self.connection.lock().await;
+        
+        // Start a transaction to ensure data consistency
+        conn.execute("BEGIN TRANSACTION", [])?;
+        
+        // First, check if the model exists
+        let mut stmt = conn.prepare("SELECT COUNT(*) FROM device_models WHERE id = ?1")?;
+        let count: i64 = stmt.query_row([model_id], |row| row.get(0))?;
+        
+        if count == 0 {
+            conn.execute("ROLLBACK", [])?;
+            return Err(anyhow::anyhow!("Device model not found"));
+        }
+        
+        // Delete all tag templates associated with this model
+        let mut stmt = conn.prepare("DELETE FROM tag_templates WHERE model_id = ?1")?;
+        let deleted_tags = stmt.execute([model_id])?;
+        
+        // Delete any devices that use this model
+        let mut stmt = conn.prepare("DELETE FROM devices WHERE model_id = ?1")?;
+        let deleted_devices = stmt.execute([model_id])?;
+        
+        // Finally, delete the device model itself
+        let mut stmt = conn.prepare("DELETE FROM device_models WHERE id = ?1")?;
+        let deleted_models = stmt.execute([model_id])?;
+        
+        // Commit the transaction
+        conn.execute("COMMIT", [])?;
+        
+        info!("Deleted device model {}, {} associated tag templates, and {} devices", 
+              model_id, deleted_tags, deleted_devices);
+        Ok(())
+    }
+
     // Device Instance CRUD operations
     pub async fn create_device(&self, device: &DeviceInstance) -> Result<()> {
         let conn = self.connection.lock().await;

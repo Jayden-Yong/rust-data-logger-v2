@@ -1,6 +1,6 @@
 use axum::{
     response::{Html, IntoResponse},
-    routing::{get, post},
+    routing::{get, post, put, delete, any, MethodRouter},
     Router,
 };
 use socketioxide::SocketIo;
@@ -126,7 +126,8 @@ async fn main() -> anyhow::Result<()> {
         // Enhanced device management with models and tags
         .route("/api/device-models", get(api::get_device_models))
         .route("/api/device-models/:id", get(api::get_device_model))
-        .route("/api/device-models/:id/tags", get(api::get_tag_templates))
+        .route("/api/device-models/:id/delete", post(api::delete_device_model))
+        // .route("/api/device-models/:id/tags", get(api::get_tag_templates))
         .route("/api/devices-enhanced", get(api::get_devices_enhanced).post(api::create_device_with_tags))
         .route("/api/devices-enhanced/:id", get(api::get_device_enhanced).put(api::update_device_with_tags))
         .route("/api/devices/:id/tags", get(api::get_device_tags_api))
