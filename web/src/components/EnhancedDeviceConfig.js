@@ -96,6 +96,7 @@ const EnhancedDeviceConfig = () => {
       setLoading(true);
       const response = await axios.get('/api/devices-enhanced');
       if (response.data.success) {
+        console.log('EnhancedDeviceConfig: Loaded devices:', response.data.data);
         setDevices(response.data.data);
       }
     } catch (error) {
@@ -120,17 +121,18 @@ const EnhancedDeviceConfig = () => {
         return;
       }
 
-      console.log('Fetching tag templates for model:', model.name);
-      const response = await axios.get(`/api/modbus-tcp-tag-registers?device_model=${encodeURIComponent(model.name)}`);
+      console.log('Fetching tag templates for model:', model.name, 'with ID:', modelId);
+      const response = await axios.get(`/api/modbus-tcp-tag-registers?model_id=${encodeURIComponent(modelId)}`);
       if (response.data.success) {
         // Transform the data to match the expected format
         const transformedData = response.data.data.map(item => ({
           id: item.id,
           name: item.data_label,
           address: item.address,
+          size: item.size,
           data_type: item.modbus_type,
           description: `${item.ava_type}${item.mppt ? ` - MPPT ${item.mppt}` : ''}${item.input ? ` - Input ${item.input}` : ''} (${item.device_model})`,
-          scaling_multiplier: item.divider,
+          scaling_multiplier: 1.0 / item.divider,  // Convert divider to multiplier (1/divider)
           scaling_offset: 0,
           unit: item.register_type,
           read_only: item.register_type === 'input',
@@ -190,6 +192,7 @@ const EnhancedDeviceConfig = () => {
       const newTags = tagTemplates.map(template => ({
         name: template.name,
         address: template.address,
+        size: template.size || 1,
         data_type: template.data_type,
         description: template.description,
         scaling_multiplier: template.scaling_multiplier,
@@ -333,6 +336,7 @@ const EnhancedDeviceConfig = () => {
     const newTag = {
       name: '',
       address: 1,
+      size: 1,
       data_type: 'holding_register',
       description: '',
       scaling_multiplier: 1.0,
@@ -416,8 +420,10 @@ const EnhancedDeviceConfig = () => {
       dataIndex: ['device', 'model_id'],
       key: 'model_id',
       render: (modelId) => {
+        console.log('EnhancedDeviceConfig: Rendering model for ID:', modelId, 'Available models:', deviceModels.length);
         if (!modelId) return <Tag color="default">Custom</Tag>;
         const model = deviceModels.find(m => m.id === modelId);
+        console.log('EnhancedDeviceConfig: Found model:', model);
         return model ? (
           <Tooltip title={model.description}>
             <Tag color="blue">{model.name}</Tag>
@@ -430,10 +436,13 @@ const EnhancedDeviceConfig = () => {
       dataIndex: ['device', 'protocol_config'],
       key: 'protocol',
       render: (config) => {
+        console.log('EnhancedDeviceConfig: Rendering protocol for config:', config);
         try {
           const protocolConfig = JSON.parse(config);
+          console.log('EnhancedDeviceConfig: Parsed protocol config:', protocolConfig);
           return <Tag color={getProtocolTypeColor(protocolConfig.type)}>{protocolConfig.type?.toUpperCase()}</Tag>;
         } catch (e) {
+          console.error('EnhancedDeviceConfig: Error parsing protocol config:', e);
           return <Tag color="default">Unknown</Tag>;
         }
       },
@@ -449,6 +458,42 @@ const EnhancedDeviceConfig = () => {
             return <Text code>{protocolConfig.host}</Text>;
           } else if (protocolConfig.type === 'iec104' && protocolConfig.target_host) {
             return <Text code>{protocolConfig.target_host}</Text>;
+          }
+          return <Text type="secondary">N/A</Text>;
+        } catch (e) {
+          return <Text type="secondary">N/A</Text>;
+        }
+      },
+    },
+    {
+      title: 'Device ID',
+      dataIndex: ['device', 'protocol_config'],
+      key: 'device_id',
+      render: (config) => {
+        try {
+          const protocolConfig = JSON.parse(config);
+          if (protocolConfig.type === 'modbus_tcp' || protocolConfig.type === 'modbus_rtu') {
+            return <Text code>{protocolConfig.slave_id || 'N/A'}</Text>;
+          } else if (protocolConfig.type === 'iec104') {
+            return <Text code>{protocolConfig.common_address || 'N/A'}</Text>;
+          }
+          return <Text type="secondary">N/A</Text>;
+        } catch (e) {
+          return <Text type="secondary">N/A</Text>;
+        }
+      },
+    },
+    {
+      title: 'Port',
+      dataIndex: ['device', 'protocol_config'],
+      key: 'port',
+      render: (config) => {
+        try {
+          const protocolConfig = JSON.parse(config);
+          if (protocolConfig.port) {
+            return <Text code>{protocolConfig.port}</Text>;
+          } else if (protocolConfig.type === 'iec104' && protocolConfig.target_port) {
+            return <Text code>{protocolConfig.target_port}</Text>;
           }
           return <Text type="secondary">N/A</Text>;
         } catch (e) {
@@ -541,6 +586,25 @@ const EnhancedDeviceConfig = () => {
           onChange={(val) => updateTag(index, 'address', val)}
           min={1}
           max={65535}
+        />
+      ),
+    },
+    {
+      title: (
+        <Tooltip title="Number of registers to read for this tag (typically 1 for 16-bit values, 2 for 32-bit values like F32)">
+          Size
+        </Tooltip>
+      ),
+      dataIndex: 'size',
+      key: 'size',
+      width: 80,
+      render: (value, record, index) => (
+        <InputNumber
+          value={value || 1}
+          onChange={(val) => updateTag(index, 'size', val || 1)}
+          min={1}
+          max={4}
+          placeholder="1"
         />
       ),
     },

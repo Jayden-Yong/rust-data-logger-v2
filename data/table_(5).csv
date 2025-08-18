@@ -1,0 +1,10 @@
+﻿No.,SN,Device ID,Device type,Device name,Device model,Port,Device address,Forwarding Modbus ID,Com status
+1,,1,Meter,METTER_UMG604,UMG604,COM2,1,1,Online
+2,,2,Meteo station,RT1,RT1-Horizontal,COM1,1,2,Online
+3,A2542703999,3,String inverter,INV_01,SG150CX,COM3,1,3,Online
+4,A2542809205,4,String inverter,INV_02,SG150CX,COM3,2,4,Online
+5,A2552008614,5,String inverter,INV_03,SG125CX-P2,COM3,3,5,Online
+6,A2552008616,6,String inverter,INV_04,SG125CX-P2,COM3,4,6,Online
+7,A2551719121,7,String inverter,INV_05,SG125CX-P2,COM3,5,7,Online
+8,A2552008610,8,String inverter,INV_06,SG125CX-P2,COM3,6,8,Online
+9,A2011161698,9,Residential inverter,INV_07,SG20RT,COM3,7,9,Online

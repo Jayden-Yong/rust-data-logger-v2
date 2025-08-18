@@ -434,6 +434,7 @@ pub struct CreateDeviceRequest {
 pub struct CreateTagRequest {
     pub name: String,
     pub address: u16,
+    pub size: i32,
     pub data_type: String,
     pub description: Option<String>,
     pub scaling_multiplier: f64,
@@ -476,6 +477,7 @@ pub async fn create_device_with_tags(
         device_id: request.id.clone(),
         name: tag.name,
         address: tag.address,
+        size: tag.size,
         data_type: tag.data_type,
         description: tag.description,
         scaling_multiplier: tag.scaling_multiplier,
@@ -626,6 +628,7 @@ pub async fn update_device_with_tags(
         device_id: device_id.clone(),
         name: tag.name,
         address: tag.address,
+        size: tag.size,
         data_type: tag.data_type,
         description: tag.description,
         scaling_multiplier: tag.scaling_multiplier,
@@ -771,10 +774,11 @@ pub struct CsvUploadResponse {
     pub validation_errors: Vec<String>,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Debug)]
 pub struct ModbusTcpTagQuery {
     pub device_brand: Option<String>,
     pub device_model: Option<String>,
+    pub model_id: Option<String>,
     pub ava_type: Option<String>,
 }
 
@@ -950,18 +954,37 @@ pub async fn get_modbus_tcp_tag_registers(
     State(state): State<AppState>,
     Query(params): Query<ModbusTcpTagQuery>,
 ) -> Result<Json<ApiResponse<Vec<ModbusTcpTagRegister>>>, StatusCode> {
-    let result = match (params.device_brand, params.device_model) {
-        (Some(brand), Some(model)) => {
+    // Debug logging
+    eprintln!("API DEBUG: Received query params: {:?}", params);
+    
+    let result = match (params.model_id, params.device_brand, params.device_model) {
+        // Prefer model_id if provided (most accurate, no duplicates)
+        (Some(model_id), _, _) => {
+            eprintln!("API DEBUG: Using model_id filter: {}", model_id);
+            state.database.get_modbus_tcp_tag_registers_by_model_id(&model_id).await
+        }
+        // Fallback to legacy device_brand + device_model
+        (None, Some(brand), Some(model)) => {
+            eprintln!("API DEBUG: Using brand + model filter: {} + {}", brand, model);
             state.database.get_modbus_tcp_tag_registers_by_device(&brand, &model).await
         }
-        (None, Some(model)) => {
+        // Fallback to legacy device_model only
+        (None, None, Some(model)) => {
+            eprintln!("API DEBUG: Using model only filter: {}", model);
             state.database.get_modbus_tcp_tag_registers_by_model(&model).await
         }
-        _ => state.database.get_all_modbus_tcp_tag_registers().await,
+        // Return all if no specific filters
+        _ => {
+            eprintln!("API DEBUG: No filters provided - returning all records");
+            state.database.get_all_modbus_tcp_tag_registers().await
+        }
     };
 
     match result {
-        Ok(tag_registers) => Ok(Json(ApiResponse::success(tag_registers))),
+        Ok(tag_registers) => {
+            eprintln!("API DEBUG: Returning {} records", tag_registers.len());
+            Ok(Json(ApiResponse::success(tag_registers)))
+        }
         Err(e) => {
             error!("Database error: {}", e);
             Err(StatusCode::INTERNAL_SERVER_ERROR)

@@ -7,7 +7,7 @@ pub struct ModbusTcpCsvParserService;
 
 impl ModbusTcpCsvParserService {
     pub fn new() -> Self {
-        Self
+        ModbusTcpCsvParserService
     }
 
     pub fn parse_csv<R: Read>(&self, reader: R) -> Result<Vec<CreateModbusTcpTagRegister>> {

@@ -48,10 +48,30 @@ impl LoggingService {
     }
 
     pub async fn start_device(&self, device_id: &str) -> Result<()> {
-        let device_config = self.config.devices.iter()
-            .find(|d| d.id == device_id)
-            .ok_or_else(|| anyhow::anyhow!("Device not found: {}", device_id))?
-            .clone();
+        // Get device configuration from database
+        let device_instance = self.database.get_device(device_id).await?
+            .ok_or_else(|| anyhow::anyhow!("Device not found: {}", device_id))?;
+
+        if !device_instance.enabled {
+            warn!("Device {} is disabled, cannot start", device_id);
+            return Ok(());
+        }
+
+        // Parse protocol config from JSON
+        let protocol_config: crate::config::ProtocolConfig = serde_json::from_str(&device_instance.protocol_config)
+            .map_err(|e| anyhow::anyhow!("Failed to parse protocol config for device {}: {}", device_id, e))?;
+
+        // Create device config from database instance
+        let device_config = crate::config::DeviceConfig {
+            id: device_instance.id.clone(),
+            name: device_instance.name.clone(),
+            enabled: device_instance.enabled,
+            protocol: protocol_config,
+            polling_interval_ms: device_instance.polling_interval_ms as u64,
+            timeout_ms: device_instance.timeout_ms as u64,
+            retry_count: device_instance.retry_count,
+            tags: Vec::new(), // We'll get tags from database separately
+        };
 
         // Stop existing tasks if running
         self.stop_device(device_id).await?;

@@ -71,6 +71,7 @@ pub struct DeviceTag {
     pub device_id: String,
     pub name: String,
     pub address: u16,
+    pub size: i32,
     pub data_type: String,
     pub description: Option<String>,
     pub scaling_multiplier: f64,
@@ -241,6 +242,7 @@ impl Database {
                 device_id TEXT NOT NULL,
                 name TEXT NOT NULL,
                 address INTEGER NOT NULL,
+                size INTEGER NOT NULL DEFAULT 1,
                 data_type TEXT NOT NULL,
                 description TEXT,
                 scaling_multiplier REAL DEFAULT 1.0,
@@ -255,7 +257,11 @@ impl Database {
             [],
         )?;
 
-        // Schedule groups table
+        // Add size column to device_tags if it doesn't exist (migration)
+        let _ = conn.execute(
+            "ALTER TABLE device_tags ADD COLUMN size INTEGER DEFAULT 1",
+            [],
+        ); // Ignore error if column already exists
         conn.execute(
             "CREATE TABLE IF NOT EXISTS schedule_groups (
                 id TEXT PRIMARY KEY,
@@ -1013,12 +1019,13 @@ impl Database {
         for tag in tags {
             conn.execute(
                 "INSERT INTO device_tags 
-                 (device_id, name, address, data_type, description, scaling_multiplier, scaling_offset, unit, read_only, enabled, schedule_group_id)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+                 (device_id, name, address, size, data_type, description, scaling_multiplier, scaling_offset, unit, read_only, enabled, schedule_group_id)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
                 params![
                     device_id,
                     tag.name,
                     tag.address,
+                    tag.size,
                     tag.data_type,
                     tag.description,
                     tag.scaling_multiplier,
@@ -1038,7 +1045,7 @@ impl Database {
         let conn = self.connection.lock().await;
         
         let mut stmt = conn.prepare(
-            "SELECT id, device_id, name, address, data_type, description, 
+            "SELECT id, device_id, name, address, size, data_type, description, 
                     scaling_multiplier, scaling_offset, unit, read_only, enabled, schedule_group_id
              FROM device_tags WHERE device_id = ?1 ORDER BY address"
         )?;
@@ -1049,14 +1056,15 @@ impl Database {
                 device_id: row.get(1)?,
                 name: row.get(2)?,
                 address: row.get::<_, i32>(3)? as u16,
-                data_type: row.get(4)?,
-                description: row.get(5)?,
-                scaling_multiplier: row.get(6)?,
-                scaling_offset: row.get(7)?,
-                unit: row.get(8)?,
-                read_only: row.get(9)?,
-                enabled: row.get(10)?,
-                schedule_group_id: row.get(11)?,
+                size: row.get(4)?,
+                data_type: row.get(5)?,
+                description: row.get(6)?,
+                scaling_multiplier: row.get(7)?,
+                scaling_offset: row.get(8)?,
+                unit: row.get(9)?,
+                read_only: row.get(10)?,
+                enabled: row.get(11)?,
+                schedule_group_id: row.get(12)?,
             })
         })?;
 
@@ -1412,6 +1420,57 @@ impl Database {
         )?;
 
         let rows = stmt.query_map([device_model], |row| {
+            let created_str: String = row.get(12)?;
+            let updated_str: String = row.get(13)?;
+            let created_at = DateTime::parse_from_rfc3339(&created_str)
+                .map_err(|_| rusqlite::Error::InvalidColumnType(12, "created_at".to_string(), rusqlite::types::Type::Text))?
+                .with_timezone(&Utc);
+            let updated_at = DateTime::parse_from_rfc3339(&updated_str)
+                .map_err(|_| rusqlite::Error::InvalidColumnType(13, "updated_at".to_string(), rusqlite::types::Type::Text))?
+                .with_timezone(&Utc);
+
+            Ok(ModbusTcpTagRegister {
+                id: Some(row.get(0)?),
+                device_brand: row.get(1)?,
+                device_model: row.get(2)?,
+                ava_type: row.get(3)?,
+                mppt: row.get(4)?,
+                input: row.get(5)?,
+                data_label: row.get(6)?,
+                address: row.get(7)?,
+                size: row.get(8)?,
+                modbus_type: row.get(9)?,
+                divider: row.get(10)?,
+                register_type: row.get(11)?,
+                created_at,
+                updated_at,
+            })
+        })?;
+
+        let mut tag_registers = Vec::new();
+        for row in rows {
+            tag_registers.push(row?);
+        }
+
+        Ok(tag_registers)
+    }
+
+    pub async fn get_modbus_tcp_tag_registers_by_model_id(&self, model_id: &str) -> Result<Vec<ModbusTcpTagRegister>> {
+        let conn = self.connection.lock().await;
+        
+        // Join with device_models table to get unique tags by model_id
+        // Use DISTINCT to eliminate any potential duplicates
+        let mut stmt = conn.prepare(
+            "SELECT DISTINCT mtr.id, mtr.device_brand, mtr.device_model, mtr.ava_type, mtr.mppt, mtr.input, 
+                    mtr.data_label, mtr.address, mtr.size, mtr.modbus_type, mtr.divider, mtr.register_type, 
+                    mtr.created_at, mtr.updated_at 
+             FROM modbus_tcp_tag_registers mtr
+             JOIN device_models dm ON dm.name = mtr.device_model AND dm.manufacturer = mtr.device_brand
+             WHERE dm.id = ?1 
+             ORDER BY mtr.ava_type, mtr.mppt, mtr.input, mtr.address ASC"
+        )?;
+
+        let rows = stmt.query_map([model_id], |row| {
             let created_str: String = row.get(12)?;
             let updated_str: String = row.get(13)?;
             let created_at = DateTime::parse_from_rfc3339(&created_str)

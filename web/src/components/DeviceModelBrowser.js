@@ -124,9 +124,9 @@ const DeviceModelBrowser = ({ onSelectModel, visible, onClose, onTagTemplatesLoa
       const model = deviceModels.find(m => m.id === modelId);
       
       if (model && model.protocol_type === 'modbus_tcp') {
-        // Use new Modbus TCP API - search by exact device model name
+        // Use new Modbus TCP API - search by unique model ID
         try {
-          const response = await axios.get(`/api/modbus-tcp-tag-registers?device_model=${encodeURIComponent(model.name)}`);
+          const response = await axios.get(`/api/modbus-tcp-tag-registers?model_id=${encodeURIComponent(modelId)}`);
           
           if (response.data.success && response.data.data.length > 0) {
             console.log(`Found ${response.data.data.length} tag registers for device model: ${model.name}`);
@@ -136,6 +136,7 @@ const DeviceModelBrowser = ({ onSelectModel, visible, onClose, onTagTemplatesLoa
               id: item.id,
               name: item.data_label,
               address: item.address,
+              size: item.size,
               data_type: item.modbus_type,
               description: `${item.ava_type}${item.mppt ? ` - MPPT ${item.mppt}` : ''}${item.input ? ` - Input ${item.input}` : ''} (${item.device_model})`,
               scaling_multiplier: item.divider,
@@ -425,6 +426,13 @@ const DeviceModelBrowser = ({ onSelectModel, visible, onClose, onTagTemplatesLoa
       dataIndex: 'address',
       key: 'address',
       width: 80,
+    },
+    {
+      title: 'Size',
+      dataIndex: 'size',
+      key: 'size',
+      width: 60,
+      render: (size) => <Tag color="blue">{size || 1}</Tag>,
     },
     {
       title: 'Data Type',

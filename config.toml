@@ -24,6 +24,7 @@ slave_id = 1
 [[devices.tags]]
 name = "temperature"
 address = 1
+size = 1
 data_type = "holding_register"
 description = "Temperature sensor"
 

@@ -142,20 +142,75 @@ impl ModbusClient {
                 Ok(value as i32 as f64)
             },
             DataType::Float32 => {
-                let result = client.read_holding_registers(tag.address, 2).await?;
-                // let bytes = [
-                //     (result[0] & 0xFF) as u8,
-                //     ((result[0] >> 8) & 0xFF) as u8,
-                //     (result[1] & 0xFF) as u8,
-                //     ((result[1] >> 8) & 0xFF) as u8,
-                // ];
-                // let value = f32::from_le_bytes(bytes);
-
-                let reg1 = result[1];  // Most significant word
-                let reg2 = result[0];  // Least significant word
-                let combined = ((reg1 as u32) << 16) | (reg2 as u32);
-                let bytes = u32::to_be_bytes(combined);
-                let value = f32::from_be_bytes(bytes);
+                let result = client.read_holding_registers(tag.address, tag.size as u16).await?;
+                
+                if result.len() < 2 {
+                    return Err(anyhow!("Expected at least 2 registers for F32, got {}", result.len()));
+                }
+                
+                // Try different byte order combinations for power meter compatibility
+                let reg0 = result[0];  // First register 
+                let reg1 = result[1];  // Second register
+                
+                // Most common for power meters: ABCD byte order (big-endian words, big-endian bytes)
+                let combined_abcd = ((reg0 as u32) << 16) | (reg1 as u32);
+                let bytes_abcd = combined_abcd.to_be_bytes();
+                let value_abcd = f32::from_be_bytes(bytes_abcd);
+                
+                // Alternative: CDAB byte order (little-endian words, big-endian bytes)
+                let combined_cdab = ((reg1 as u32) << 16) | (reg0 as u32);
+                let bytes_cdab = combined_cdab.to_be_bytes();
+                let value_cdab = f32::from_be_bytes(bytes_cdab);
+                
+                // BADC byte order (big-endian words, little-endian bytes)
+                let combined_badc = ((reg0 as u32) << 16) | (reg1 as u32);
+                let bytes_badc = combined_badc.to_le_bytes();
+                let value_badc = f32::from_le_bytes(bytes_badc);
+                
+                // DCBA byte order (little-endian words, little-endian bytes)
+                let combined_dcba = ((reg1 as u32) << 16) | (reg0 as u32);
+                let bytes_dcba = combined_dcba.to_le_bytes();
+                let value_dcba = f32::from_le_bytes(bytes_dcba);
+                
+                println!("F32 Debug - Address: {}, Raw registers: [{}, {}]", tag.address, reg0, reg1);
+                println!("  ABCD: 0x{:08X} = {}", combined_abcd, value_abcd);
+                println!("  CDAB: 0x{:08X} = {}", combined_cdab, value_cdab);
+                println!("  BADC: 0x{:08X} = {}", combined_badc, value_badc);
+                println!("  DCBA: 0x{:08X} = {}", combined_dcba, value_dcba);
+                
+                // For frequency (address 19050), we expect a value around 50 Hz
+                // Choose the most reasonable value
+                let value = if tag.address == 19050 {
+                    // For frequency, pick the value closest to 50
+                    let candidates = vec![
+                        (value_abcd, "ABCD"),
+                        (value_cdab, "CDAB"), 
+                        (value_badc, "BADC"),
+                        (value_dcba, "DCBA")
+                    ];
+                    
+                    let mut best_value = value_abcd;
+                    let mut best_name = "ABCD";
+                    let mut best_distance = (value_abcd - 50.0).abs();
+                    
+                    for (val, name) in candidates {
+                        if val.is_finite() && val > 0.0 && val < 1000.0 {
+                            let distance = (val - 50.0).abs();
+                            if distance < best_distance {
+                                best_distance = distance;
+                                best_value = val;
+                                best_name = name;
+                            }
+                        }
+                    }
+                    
+                    println!("  Selected {} format for frequency: {}", best_name, best_value);
+                    best_value
+                } else {
+                    // For other addresses, use ABCD as default for now
+                    value_abcd
+                };
+                
                 Ok(value as f64)
             },
         }
@@ -163,7 +218,12 @@ impl ModbusClient {
 
     fn apply_scaling(&self, value: f64, tag: &TagConfig) -> f64 {
         if let Some(scaling) = &tag.scaling {
-            value * scaling.multiplier + scaling.offset
+            let scaled_value = value * scaling.multiplier + scaling.offset;
+            if tag.name.contains("energy") || tag.name.contains("total_pos_active_energy") {
+                println!("Scaling {} - Raw: {}, Multiplier: {}, Offset: {}, Final: {}", 
+                         tag.name, value, scaling.multiplier, scaling.offset, scaled_value);
+            }
+            scaled_value
         } else {
             value
         }
@@ -186,6 +246,7 @@ impl ModbusClient {
             let tag_config = TagConfig {
                 name: device_tag.name.clone(),
                 address: device_tag.address,
+                size: device_tag.size,
                 data_type: self.parse_data_type(&device_tag.data_type),
                 scaling: Some(ScalingConfig {
                     multiplier: device_tag.scaling_multiplier,
@@ -241,7 +302,7 @@ impl ModbusClient {
             "discrete_input" => DataType::DiscreteInput,
             "holding_register" => DataType::HoldingRegister,
             "input_register" => DataType::InputRegister,
-            "float32" => DataType::Float32,
+            "float32" | "F32" | "FLOAT" => DataType::Float32,  // Handle all float variants
             "uint16" => DataType::UInt16,
             "int16" => DataType::Int16,
             "uint32" => DataType::UInt32,

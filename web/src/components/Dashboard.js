@@ -15,9 +15,11 @@ import moment from 'moment';
 
 const Dashboard = () => {
   const [devices, setDevices] = useState([]);
+  const [deviceModels, setDeviceModels] = useState([]);
   const [systemStatus, setSystemStatus] = useState(null);
   const [recentLogs, setRecentLogs] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [deviceTags, setDeviceTags] = useState({}); // Store all device tags for scaling lookup
 
   useEffect(() => {
     fetchData();
@@ -27,8 +29,9 @@ const Dashboard = () => {
 
   const fetchData = async () => {
     try {
-      const [devicesRes, statusRes, logsRes] = await Promise.all([
+      const [devicesRes, modelsRes, statusRes, logsRes] = await Promise.all([
         axios.get('/api/devices-enhanced'),
+        axios.get('/api/device-models'),
         axios.get('/api/status'),
         axios.get('/api/logs?limit=10')
       ]);
@@ -43,6 +46,13 @@ const Dashboard = () => {
         }));
         console.log(devicesWithStatus);
         setDevices(devicesWithStatus);
+        
+        // Fetch device tags for each device to build scaling lookup
+        fetchDeviceTags(devicesWithStatus);
+      }
+
+      if (modelsRes.data.success) {
+        setDeviceModels(modelsRes.data.data);
       }
 
       if (statusRes.data.success) {
@@ -59,6 +69,41 @@ const Dashboard = () => {
     }
   };
 
+  const fetchDeviceTags = async (deviceList) => {
+    try {
+      const tagPromises = deviceList.map(device => 
+        axios.get(`/api/devices/${device.id}/tags`)
+      );
+      
+      const tagResponses = await Promise.all(tagPromises);
+      const tagsLookup = {};
+      
+      tagResponses.forEach((response, index) => {
+        if (response.data.success) {
+          const deviceId = deviceList[index].id;
+          tagsLookup[deviceId] = {};
+          
+          response.data.data.forEach(tag => {
+            if (tagsLookup[deviceId][tag.name]) {
+              console.log(`Duplicate tag name ${tag.name} for device ${deviceId}, replacing previous entry`);
+            }
+            tagsLookup[deviceId][tag.name] = {
+              scaling_multiplier: tag.scaling_multiplier,
+              scaling_offset: tag.scaling_offset,
+              unit: tag.unit,
+              address: tag.address // Adding address for debugging
+            };
+          });
+        }
+      });
+      
+      setDeviceTags(tagsLookup);
+      console.log('Device tags lookup populated:', tagsLookup);
+    } catch (error) {
+      console.error('Error fetching device tags:', error);
+    }
+  };
+
   const handleDeviceAction = async (deviceId, action) => {
     try {
       await axios.post(`/api/devices-enhanced/${deviceId}/${action}`);
@@ -66,6 +111,11 @@ const Dashboard = () => {
     } catch (error) {
       console.error(`Error ${action} device:`, error);
     }
+  };
+
+  const getDeviceName = (deviceId) => {
+    const device = devices.find(d => d.id === deviceId);
+    return device ? device.name : deviceId;
   };
 
   const getStatusIcon = (status) => {
@@ -100,15 +150,25 @@ const Dashboard = () => {
     },
     {
       title: 'Device Model',
-      dataIndex: 'model_name',
-      key: 'model_name',
-      render: (model_name) => model_name || 'Custom',
+      dataIndex: 'model_id',
+      key: 'model_id',
+      render: (modelId) => {
+        const model = deviceModels.find(m => m.id === modelId);
+        return model ? model.name : 'Unknown';
+      },
     },
     {
       title: 'Protocol',
       dataIndex: 'protocol_config',
       key: 'protocol',
-      render: (config) => config?.type?.toUpperCase() || 'Unknown',
+      render: (protocolConfig) => {
+        try {
+          const config = JSON.parse(protocolConfig);
+          return config?.type?.toUpperCase() || 'Unknown';
+        } catch (error) {
+          return 'Unknown';
+        }
+      },
     },
     {
       title: 'Status',
@@ -184,6 +244,7 @@ const Dashboard = () => {
       title: 'Device',
       dataIndex: 'device_id',
       key: 'device_id',
+      render: (deviceId) => getDeviceName(deviceId),
     },
     {
       title: 'Tag',
@@ -194,8 +255,36 @@ const Dashboard = () => {
       title: 'Value',
       dataIndex: 'value',
       key: 'value',
-      render: (value, record) => 
-        `${value.toFixed(2)} ${record.unit || ''}`,
+      render: (value, record) => {
+        // Get scaling factors for this device/tag combination
+        const deviceId = record.device_id;
+        const tagName = record.tag_name;
+        
+        let decodedValue = value; // Default to raw value
+        let actualUnit = '';
+        
+        if (deviceTags[deviceId] && deviceTags[deviceId][tagName]) {
+          const tagInfo = deviceTags[deviceId][tagName];
+          console.log(`Decoding ${tagName}: raw=${value}, multiplier=${tagInfo.scaling_multiplier}, offset=${tagInfo.scaling_offset}`);
+          // Apply scaling: decoded_value = (raw_value / scaling_multiplier) + scaling_offset
+          // Note: Based on the database schema, it looks like we should divide by multiplier
+          decodedValue = (value / tagInfo.scaling_multiplier) + tagInfo.scaling_offset;
+          console.log(`Decoded ${tagName}: ${decodedValue}`);
+          
+          // Get the actual unit (filter out register types)
+          const registerTypes = ['input', 'holding', 'coil', 'discrete_input'];
+          if (tagInfo.unit && !registerTypes.includes(tagInfo.unit)) {
+            actualUnit = tagInfo.unit;
+          }
+        } else {
+          console.log(`No scaling info found for ${deviceId}/${tagName}, showing raw value: ${value}`);
+          // Fallback to record.unit if tag info not available
+          const registerTypes = ['input', 'holding', 'coil', 'discrete_input'];
+          actualUnit = record.unit && !registerTypes.includes(record.unit) ? record.unit : '';
+        }
+        
+        return `${decodedValue.toFixed(2)}${actualUnit ? ' ' + actualUnit : ''}`;
+      },
     },
     {
       title: 'Quality',

@@ -65,6 +65,7 @@ pub enum ProtocolConfig {
 pub struct TagConfig {
     pub name: String,
     pub address: u16,
+    pub size: i32,
     pub data_type: DataType,
     pub scaling: Option<ScalingConfig>,
     pub description: Option<String>,
@@ -136,6 +137,7 @@ impl Default for AppConfig {
                         TagConfig {
                             name: "temperature".to_string(),
                             address: 1,
+                            size: 1,
                             data_type: DataType::HoldingRegister,
                             scaling: Some(ScalingConfig {
                                 multiplier: 0.1,
