@@ -54,11 +54,27 @@ const EnhancedDeviceConfig = () => {
 
   const fetchDeviceModels = async () => {
     try {
+      console.log('EnhancedDeviceConfig: Fetching device models...');
       const response = await axios.get('/api/device-models');
       if (response.data.success) {
-        setDeviceModels(response.data.data);
+        const models = response.data.data;
+        console.log(`EnhancedDeviceConfig: Loaded ${models.length} device models:`, models);
+        
+        // Check for the specific model mentioned
+        const sungrowModel = models.find(m => 
+          m.name?.toLowerCase().includes('sungrow') || 
+          m.manufacturer?.toLowerCase().includes('huawei')
+        );
+        if (sungrowModel) {
+          console.log('EnhancedDeviceConfig: Found Sungrow/Huawei model:', sungrowModel);
+        } else {
+          console.log('EnhancedDeviceConfig: Sungrow/Huawei model not found in response');
+        }
+        
+        setDeviceModels(models);
       }
     } catch (error) {
+      console.error('EnhancedDeviceConfig: Failed to fetch device models:', error);
       message.error('Failed to fetch device models');
     }
   };
@@ -95,24 +111,74 @@ const EnhancedDeviceConfig = () => {
     }
 
     try {
-      const response = await axios.get(`/api/device-models/${modelId}/tags`);
+      // Find the model name from the modelId
+      const model = deviceModels.find(m => m.id === modelId);
+      if (!model) {
+        console.error('Model not found for ID:', modelId);
+        setTagTemplates([]);
+        return;
+      }
+
+      console.log('Fetching tag templates for model:', model.name);
+      const response = await axios.get(`/api/modbus-tcp-tag-registers?device_model=${encodeURIComponent(model.name)}`);
       if (response.data.success) {
-        setTagTemplates(response.data.data);
+        // Transform the data to match the expected format
+        const transformedData = response.data.data.map(item => ({
+          id: item.id,
+          name: item.data_label,
+          address: item.address,
+          data_type: item.modbus_type,
+          description: `${item.ava_type}${item.mppt ? ` - MPPT ${item.mppt}` : ''}${item.input ? ` - Input ${item.input}` : ''} (${item.device_model})`,
+          scaling_multiplier: item.divider,
+          scaling_offset: 0,
+          unit: item.register_type,
+          read_only: item.register_type === 'input',
+          // Keep original fields for compatibility
+          data_label: item.data_label,
+          modbus_type: item.modbus_type,
+          ava_type: item.ava_type,
+          mppt: item.mppt,
+          input: item.input,
+          divider: item.divider,
+          register_type: item.register_type,
+          device_model: item.device_model
+        }));
+        
+        console.log(`Loaded ${transformedData.length} tag templates`);
+        setTagTemplates(transformedData);
       }
     } catch (error) {
+      console.error('Failed to fetch tag templates:', error);
       message.error('Failed to fetch tag templates');
     }
   };
 
   const handleModelChange = (modelId) => {
     setSelectedModel(modelId);
-    fetchTagTemplates(modelId);
     
-    // Update device tags based on selected model
-    if (modelId && modelId !== 'custom') {
-      // Will be populated when tag templates are fetched
-    } else {
+    // Don't automatically fetch tag templates here
+    // Tags will only load when the "Enabled" toggle is switched on
+    
+    // Clear existing tags if switching to custom or clearing selection
+    if (!modelId || modelId === 'custom') {
+      setTagTemplates([]);
       setDeviceTags([]);
+    }
+    
+    console.log('Model changed to:', modelId, '- tags will load when device is enabled');
+  };
+
+  // Auto-load tag templates when enabled is toggled to true
+  const handleFormValuesChange = async (changedValues, allValues) => {
+    // If enabled is being turned on and we have a model selected
+    if (changedValues.enabled === true && allValues.model_id && allValues.model_id !== 'custom') {
+      console.log('Auto-loading tag templates for model:', allValues.model_id);
+      
+      // Check if we already have tag templates loaded for this model
+      if (tagTemplates.length === 0 || selectedModel !== allValues.model_id) {
+        setSelectedModel(allValues.model_id);
+        await fetchTagTemplates(allValues.model_id);
+      }
     }
   };
 
@@ -174,9 +240,10 @@ const EnhancedDeviceConfig = () => {
       common_address: protocolConfig.common_address || 1,
     });
 
-    if (device.device.model_id) {
-      fetchTagTemplates(device.device.model_id);
-    }
+    // Don't automatically load tag templates when editing
+    // The existing device tags are already loaded in setDeviceTags(device.tags)
+    // If user wants to reload tag templates, they can toggle "Enabled" off and on
+    console.log('Editing device - using existing tags, templates will reload if enabled is toggled');
     
     setModalVisible(true);
   };
@@ -579,6 +646,7 @@ const EnhancedDeviceConfig = () => {
           form={form}
           layout="vertical"
           onFinish={handleSubmit}
+          onValuesChange={handleFormValuesChange}
           initialValues={{
             enabled: false,
             polling_interval_ms: 1000,
@@ -842,9 +910,32 @@ const EnhancedDeviceConfig = () => {
         visible={modelBrowserVisible}
         onClose={() => setModelBrowserVisible(false)}
         onSelectModel={(model) => {
+          console.log('Model selected in EnhancedDeviceConfig:', model);
+          
+          // Check if the model already exists in deviceModels
+          const existingModelIndex = deviceModels.findIndex(m => m.id === model.id);
+          
+          if (existingModelIndex === -1) {
+            // Add the new model to the deviceModels list if it doesn't exist
+            setDeviceModels(prev => [...prev, model]);
+          } else {
+            // Update the existing model with fresh data
+            setDeviceModels(prev => prev.map(m => m.id === model.id ? model : m));
+          }
+          
           form.setFieldValue('model_id', model.id);
-          handleModelChange(model.id);
+          setSelectedModel(model.id);
+          
+          // Don't automatically load tag templates here
+          // Tags will only load when the "Enabled" toggle is switched on
+          console.log('Model selected - tags will load when device is enabled');
+          
           setModelBrowserVisible(false);
+        }}
+        onTagTemplatesLoaded={(templates, model) => {
+          console.log('Tag templates loaded callback:', templates.length, model.name);
+          // Don't automatically load tag templates here - they should only load when device is enabled
+          console.log('Tag templates available but not loaded - will load when device is enabled');
         }}
       />
     </div>

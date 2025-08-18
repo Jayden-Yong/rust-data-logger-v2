@@ -31,7 +31,7 @@ const { Option } = Select;
 const { Title, Text } = Typography;
 const { TextArea } = Input;
 
-const DeviceModelBrowser = ({ onSelectModel, visible, onClose }) => {
+const DeviceModelBrowser = ({ onSelectModel, visible, onClose, onTagTemplatesLoaded }) => {
   const [deviceModels, setDeviceModels] = useState([]);
   const [filteredModels, setFilteredModels] = useState([]);
   const [loading, setLoading] = useState(false);
@@ -45,22 +45,32 @@ const DeviceModelBrowser = ({ onSelectModel, visible, onClose }) => {
   const [form] = Form.useForm();
 
   const filterModels = useCallback(() => {
-    let filtered = deviceModels;
+    let filtered = [...deviceModels]; // Create a copy to avoid mutations
+
+    console.log('Filtering models:', {
+      total: deviceModels.length,
+      searchText,
+      protocolFilter
+    });
 
     // Filter by search text
-    if (searchText) {
-      filtered = filtered.filter(model =>
-        model.name.toLowerCase().includes(searchText.toLowerCase()) ||
-        (model.manufacturer && model.manufacturer.toLowerCase().includes(searchText.toLowerCase())) ||
-        (model.description && model.description.toLowerCase().includes(searchText.toLowerCase()))
-      );
+    if (searchText && searchText.trim()) {
+      const searchLower = searchText.toLowerCase().trim();
+      filtered = filtered.filter(model => {
+        const nameMatch = model.name?.toLowerCase().includes(searchLower);
+        const manufacturerMatch = model.manufacturer?.toLowerCase().includes(searchLower);
+        const descriptionMatch = model.description?.toLowerCase().includes(searchLower);
+        
+        return nameMatch || manufacturerMatch || descriptionMatch;
+      });
     }
 
     // Filter by protocol
-    if (protocolFilter !== 'all') {
+    if (protocolFilter && protocolFilter !== 'all') {
       filtered = filtered.filter(model => model.protocol_type === protocolFilter);
     }
 
+    console.log(`Filtered to ${filtered.length} models`);
     setFilteredModels(filtered);
   }, [deviceModels, searchText, protocolFilter]);
 
@@ -77,12 +87,32 @@ const DeviceModelBrowser = ({ onSelectModel, visible, onClose }) => {
   const fetchDeviceModels = async () => {
     try {
       setLoading(true);
+      console.log('Fetching device models...');
       const response = await axios.get('/api/device-models');
+      console.log('Device models response:', response.data);
+      
       if (response.data.success) {
-        setDeviceModels(response.data.data);
+        const models = response.data.data;
+        console.log(`Loaded ${models.length} device models:`, models);
+        
+        // Check for the specific model you mentioned
+        const sungrowModel = models.find(m => 
+          m.name?.toLowerCase().includes('sungrow') || 
+          m.manufacturer?.toLowerCase().includes('huawei')
+        );
+        if (sungrowModel) {
+          console.log('Found Sungrow/Huawei model:', sungrowModel);
+        } else {
+          console.log('Sungrow/Huawei model not found in response');
+        }
+        
+        setDeviceModels(models);
+      } else {
+        console.error('API returned error:', response.data);
       }
     } catch (error) {
       console.error('Failed to fetch device models:', error);
+      console.error('Error details:', error.response?.data);
     } finally {
       setLoading(false);
     }
@@ -111,29 +141,60 @@ const DeviceModelBrowser = ({ onSelectModel, visible, onClose }) => {
               scaling_multiplier: item.divider,
               scaling_offset: 0,
               unit: item.register_type,
-              read_only: item.register_type === 'input'
+              read_only: item.register_type === 'input',
+              // Keep original fields for compatibility
+              data_label: item.data_label,
+              modbus_type: item.modbus_type,
+              ava_type: item.ava_type,
+              mppt: item.mppt,
+              input: item.input,
+              divider: item.divider,
+              register_type: item.register_type,
+              device_model: item.device_model
             }));
             setTagTemplates(transformedData);
+            
+            // Notify parent component immediately when tag templates are loaded
+            if (onTagTemplatesLoaded) {
+              onTagTemplatesLoaded(transformedData, model);
+            }
             
             console.log(`Loaded ${transformedData.length} tag templates for device model: ${model.name}`);
           } else {
             console.log(`No tag registers found for device model: ${model.name}`);
             setTagTemplates([]);
+            if (onTagTemplatesLoaded) {
+              onTagTemplatesLoaded([], model);
+            }
           }
         } catch (error) {
           console.error('Error fetching modbus TCP tag registers:', error);
           setTagTemplates([]);
+          if (onTagTemplatesLoaded) {
+            onTagTemplatesLoaded([], model);
+          }
         }
       } else {
         // Use legacy API for other protocols
         const response = await axios.get(`/api/device-models/${modelId}/tags`);
         if (response.data.success) {
           setTagTemplates(response.data.data);
+          if (onTagTemplatesLoaded) {
+            onTagTemplatesLoaded(response.data.data, model);
+          }
+        } else {
+          setTagTemplates([]);
+          if (onTagTemplatesLoaded) {
+            onTagTemplatesLoaded([], model);
+          }
         }
       }
     } catch (error) {
       console.error('Failed to fetch tag templates:', error);
       setTagTemplates([]);
+      if (onTagTemplatesLoaded) {
+        onTagTemplatesLoaded([], selectedModel);
+      }
     }
   };
 
@@ -217,13 +278,26 @@ const DeviceModelBrowser = ({ onSelectModel, visible, onClose }) => {
   };
 
   const handleModelSelect = (model) => {
+    console.log('Model selected:', model);
     setSelectedModel(model);
     fetchTagTemplates(model.id);
   };
 
   const handleSelectAndClose = () => {
     if (selectedModel && onSelectModel) {
-      onSelectModel(selectedModel);
+      // Pass the complete model object with proper display information AND tag templates
+      const modelToPass = {
+        ...selectedModel,
+        // Ensure we have a proper display label
+        label: `${selectedModel.manufacturer || 'Various'} - ${selectedModel.name}`,
+        value: selectedModel.id,
+        // Include the fetched tag templates
+        tagTemplates: tagTemplates,
+        tags: tagTemplates // Alternative field name in case parent expects 'tags'
+      };
+      console.log('Passing model with tag templates to parent:', modelToPass);
+      console.log('Number of tag templates:', tagTemplates.length);
+      onSelectModel(modelToPass);
     }
     onClose();
   };
@@ -295,7 +369,15 @@ const DeviceModelBrowser = ({ onSelectModel, visible, onClose }) => {
       title: 'Device Models',
       dataIndex: 'name',
       key: 'name',
-      render: (text) => <Text strong>{text}</Text>,
+      render: (text, record) => (
+        <div>
+          <Text strong>{text}</Text>
+          <br />
+          <Text type="secondary" style={{ fontSize: '12px' }}>
+            ID: {record.id}
+          </Text>
+        </div>
+      ),
     },
     {
       title: 'Protocol',
