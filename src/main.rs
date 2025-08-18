@@ -120,6 +120,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/devices/:id", get(api::get_device).put(api::update_device).delete(api::delete_device))
         .route("/api/devices-enhanced/:id/start", post(api::start_device))
         .route("/api/devices-enhanced/:id/stop", post(api::stop_device))
+        .route("/api/devices-debug", get(api::debug_devices))
         .route("/api/logs", get(api::get_logs))
         .route("/api/logs/:device_id", get(api::get_device_logs))
         .route("/api/status", get(api::get_status))
@@ -130,7 +131,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/device-models/:id/delete", post(api::delete_device_model))
         .route("/api/device-models/:id/tags", get(api::get_tag_templates))
         .route("/api/devices-enhanced", get(api::get_devices_enhanced).post(api::create_device_with_tags))
-        .route("/api/devices-enhanced/:id", get(api::get_device_enhanced).put(api::update_device_with_tags))
+        .route("/api/devices-enhanced/:id", get(api::get_device_enhanced).put(api::update_device_with_tags).delete(api::delete_device))
         .route("/api/devices/:id/tags", get(api::get_device_tags_api))
         
         // Schedule group management

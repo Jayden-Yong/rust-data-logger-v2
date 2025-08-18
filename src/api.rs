@@ -4,7 +4,7 @@ use axum::{
     response::Json,
 };
 use serde::{Deserialize, Serialize};
-use tracing::{info, error};
+use tracing::{info, error, warn};
 
 use crate::{AppState};
 use crate::config::{AppConfig, DeviceConfig, save_config};
@@ -107,16 +107,28 @@ pub async fn delete_device(
     State(state): State<AppState>,
     Path(device_id): Path<String>,
 ) -> Result<Json<ApiResponse<String>>, StatusCode> {
-    if state.config.devices.iter().any(|d| d.id == device_id) {
-        // Stop the device first
-        if let Err(e) = state.logging_service.stop_device(&device_id).await {
-            return Ok(Json(ApiResponse::error(format!("Failed to stop device: {}", e))));
-        }
+    info!("Attempting to delete device with ID: {}", device_id);
+    
+    // Stop the device first if it's running
+    if let Err(e) = state.logging_service.stop_device(&device_id).await {
+        warn!("Failed to stop device before deletion: {}", e);
+        // Continue with deletion even if stop fails
+    }
 
-        // This is a simplified implementation - in a real app, you'd update the config file
-        Ok(Json(ApiResponse::success("Device deleted successfully".to_string())))
-    } else {
-        Ok(Json(ApiResponse::error("Device not found".to_string())))
+    // Delete from database (matching the enhanced endpoints approach)
+    match state.database.delete_device(&device_id).await {
+        Ok(()) => {
+            info!("Device {} deleted successfully", device_id);
+            Ok(Json(ApiResponse::success("Device deleted successfully".to_string())))
+        }
+        Err(e) => {
+            error!("Failed to delete device {}: {}", device_id, e);
+            if e.to_string().contains("not found") {
+                Ok(Json(ApiResponse::error("Device not found".to_string())))
+            } else {
+                Ok(Json(ApiResponse::error(format!("Failed to delete device: {}", e))))
+            }
+        }
     }
 }
 
@@ -952,6 +964,22 @@ pub async fn get_modbus_tcp_tag_registers(
         Ok(tag_registers) => Ok(Json(ApiResponse::success(tag_registers))),
         Err(e) => {
             error!("Database error: {}", e);
+            Err(StatusCode::INTERNAL_SERVER_ERROR)
+        }
+    }
+}
+
+pub async fn debug_devices(
+    State(state): State<AppState>,
+) -> Result<Json<ApiResponse<Vec<String>>>, StatusCode> {
+    match state.database.get_devices().await {
+        Ok(devices) => {
+            let device_ids: Vec<String> = devices.iter().map(|d| d.id.clone()).collect();
+            info!("DEBUG: All device IDs in database: {:?}", device_ids);
+            Ok(Json(ApiResponse::success(device_ids)))
+        }
+        Err(e) => {
+            error!("Failed to get devices for debugging: {}", e);
             Err(StatusCode::INTERNAL_SERVER_ERROR)
         }
     }

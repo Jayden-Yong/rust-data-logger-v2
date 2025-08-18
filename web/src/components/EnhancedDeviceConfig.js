@@ -17,6 +17,7 @@ import {
   InputNumber,
   Tooltip,
   Typography,
+  Popconfirm,
 } from 'antd';
 import {
   PlusOutlined,
@@ -185,7 +186,7 @@ const EnhancedDeviceConfig = () => {
   // Update device tags when tag templates change
   useEffect(() => {
     if (tagTemplates.length > 0) {
-      const defaultScheduleGroup = scheduleGroups.find(group => group.id === 'medium_freq') || scheduleGroups[0];
+      const defaultScheduleGroup = scheduleGroups.find(group => group.id === 'low_freq') || scheduleGroups[0];
       const newTags = tagTemplates.map(template => ({
         name: template.name,
         address: template.address,
@@ -268,11 +269,31 @@ const EnhancedDeviceConfig = () => {
       } else if (values.protocol_type === 'iec104') {
         protocolConfig.host = values.host;
         protocolConfig.port = values.port;
-        protocolConfig.common_address = values.common_address;
+        // No common_address needed - IEC 104 will read all available IOAs
+      }
+
+      // Generate device ID based on protocol configuration
+      let deviceId;
+      if (editingDevice) {
+        // Keep existing ID for updates
+        deviceId = editingDevice.device.id;
+      } else {
+        // Generate new ID for new devices
+        if (values.protocol_type === 'modbus_tcp' || values.protocol_type === 'modbus_rtu') {
+          // For Modbus protocols, use a combination of protocol type and device ID
+          deviceId = `${values.protocol_type}_${values.slave_id}_${Date.now()}`;
+        } else if (values.protocol_type === 'iec104') {
+          // For IEC 104, use host and timestamp
+          const hostPart = values.host.replace(/\./g, '_');
+          deviceId = `iec104_${hostPart}_${Date.now()}`;
+        } else {
+          // Fallback
+          deviceId = `device_${Date.now()}`;
+        }
       }
 
       const deviceData = {
-        id: values.id,
+        id: deviceId,
         name: values.name,
         model_id: values.model_id || null,
         enabled: values.enabled || false,
@@ -286,7 +307,7 @@ const EnhancedDeviceConfig = () => {
       let response;
       if (editingDevice) {
         // Update existing device
-        response = await axios.put(`/api/devices-enhanced/${values.id}`, deviceData);
+        response = await axios.put(`/api/devices-enhanced/${deviceId}`, deviceData);
       } else {
         // Create new device
         response = await axios.post('/api/devices-enhanced', deviceData);
@@ -308,7 +329,7 @@ const EnhancedDeviceConfig = () => {
   };
 
   const addCustomTag = () => {
-    const defaultScheduleGroup = scheduleGroups.find(group => group.id === 'medium_freq') || scheduleGroups[0];
+    const defaultScheduleGroup = scheduleGroups.find(group => group.id === 'low_freq') || scheduleGroups[0];
     const newTag = {
       name: '',
       address: 1,
@@ -333,6 +354,29 @@ const EnhancedDeviceConfig = () => {
   const removeTag = (index) => {
     const updatedTags = deviceTags.filter((_, i) => i !== index);
     setDeviceTags(updatedTags);
+  };
+
+  const handleDelete = async (deviceId) => {
+    try {
+      setLoading(true);
+      console.log('Attempting to delete device with ID:', deviceId);
+      const response = await axios.delete(`/api/devices/${deviceId}`);
+      
+      if (response.data.success) {
+        message.success('Device deleted successfully');
+        fetchDevices(); // Refresh the device list
+      } else {
+        console.log('Delete failed with response:', response.data);
+        message.error(`Failed to delete device: ${response.data.error || 'Unknown error'}`);
+      }
+    } catch (error) {
+      console.error('Error deleting device:', error);
+      console.log('Error response:', error.response?.data);
+      const errorMessage = error.response?.data?.error || error.message || 'Unknown error occurred';
+      message.error(`Failed to delete device: ${errorMessage}`);
+    } finally {
+      setLoading(false);
+    }
   };
 
   const getProtocolTypeColor = (type) => {
@@ -395,6 +439,24 @@ const EnhancedDeviceConfig = () => {
       },
     },
     {
+      title: 'Host IP',
+      dataIndex: ['device', 'protocol_config'],
+      key: 'host_ip',
+      render: (config) => {
+        try {
+          const protocolConfig = JSON.parse(config);
+          if (protocolConfig.host) {
+            return <Text code>{protocolConfig.host}</Text>;
+          } else if (protocolConfig.type === 'iec104' && protocolConfig.target_host) {
+            return <Text code>{protocolConfig.target_host}</Text>;
+          }
+          return <Text type="secondary">N/A</Text>;
+        } catch (e) {
+          return <Text type="secondary">N/A</Text>;
+        }
+      },
+    },
+    {
       title: 'Status',
       dataIndex: ['device', 'enabled'],
       key: 'enabled',
@@ -437,12 +499,19 @@ const EnhancedDeviceConfig = () => {
             icon={<EditOutlined />}
             onClick={() => showEditModal(record)}
           />
-          <Button
-            type="text"
-            danger
-            icon={<DeleteOutlined />}
-            onClick={() => console.log('Delete:', record)}
-          />
+          <Popconfirm
+            title="Delete Device"
+            description="Are you sure you want to delete this device? This action cannot be undone."
+            onConfirm={() => handleDelete(record.device.id)}
+            okText="Yes"
+            cancelText="No"
+          >
+            <Button
+              type="text"
+              danger
+              icon={<DeleteOutlined />}
+            />
+          </Popconfirm>
         </Space>
       ),
     },
@@ -661,16 +730,7 @@ const EnhancedDeviceConfig = () => {
           }}
         >
           <Row gutter={16}>
-            <Col span={12}>
-              <Form.Item
-                label="Device ID"
-                name="id"
-                rules={[{ required: true, message: 'Please enter device ID' }]}
-              >
-                <Input placeholder="unique_device_id" disabled={!!editingDevice} />
-              </Form.Item>
-            </Col>
-            <Col span={12}>
+            <Col span={24}>
               <Form.Item
                 label="Device Name"
                 name="name"
@@ -771,8 +831,8 @@ const EnhancedDeviceConfig = () => {
                     <Col span={8}>
                       <Form.Item
                         name="slave_id"
-                        label="Slave ID"
-                        rules={[{ required: true, message: 'Please enter slave ID' }]}
+                        label="Device ID"
+                        rules={[{ required: true, message: 'Please enter device ID' }]}
                       >
                         <InputNumber min={1} max={255} placeholder="1" style={{ width: '100%' }} />
                       </Form.Item>
@@ -809,8 +869,8 @@ const EnhancedDeviceConfig = () => {
                     <Col span={8}>
                       <Form.Item
                         name="slave_id"
-                        label="Slave ID"
-                        rules={[{ required: true, message: 'Please enter slave ID' }]}
+                        label="Device ID"
+                        rules={[{ required: true, message: 'Please enter device ID' }]}
                       >
                         <InputNumber min={1} max={255} placeholder="1" style={{ width: '100%' }} />
                       </Form.Item>
@@ -820,7 +880,7 @@ const EnhancedDeviceConfig = () => {
               } else if (protocolType === 'iec104') {
                 return (
                   <Row gutter={16}>
-                    <Col span={8}>
+                    <Col span={12}>
                       <Form.Item
                         name="host"
                         label="Host"
@@ -829,22 +889,13 @@ const EnhancedDeviceConfig = () => {
                         <Input placeholder="192.168.1.100" />
                       </Form.Item>
                     </Col>
-                    <Col span={8}>
+                    <Col span={12}>
                       <Form.Item
                         name="port"
                         label="Port"
                         rules={[{ required: true, message: 'Please enter port' }]}
                       >
                         <InputNumber min={1} max={65535} placeholder="2404" style={{ width: '100%' }} />
-                      </Form.Item>
-                    </Col>
-                    <Col span={8}>
-                      <Form.Item
-                        name="common_address"
-                        label="Common Address"
-                        rules={[{ required: true, message: 'Please enter common address' }]}
-                      >
-                        <InputNumber min={1} max={65535} placeholder="1" style={{ width: '100%' }} />
                       </Form.Item>
                     </Col>
                   </Row>

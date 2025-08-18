@@ -1104,6 +1104,40 @@ impl Database {
         Ok(())
     }
 
+    pub async fn delete_device(&self, device_id: &str) -> Result<()> {
+        let conn = self.connection.lock().await;
+        
+        // Start a transaction to ensure data consistency
+        conn.execute("BEGIN TRANSACTION", [])?;
+        
+        // First, check if the device exists
+        let mut stmt = conn.prepare("SELECT COUNT(*) FROM devices WHERE id = ?1")?;
+        let count: i64 = stmt.query_row([device_id], |row| row.get(0))?;
+        
+        if count == 0 {
+            conn.execute("ROLLBACK", [])?;
+            return Err(anyhow::anyhow!("Device not found"));
+        }
+        
+        // Delete all device tags first
+        let mut stmt = conn.prepare("DELETE FROM device_tags WHERE device_id = ?1")?;
+        let deleted_tags = stmt.execute([device_id])?;
+        
+        // Delete device status
+        let mut stmt = conn.prepare("DELETE FROM device_status WHERE device_id = ?1")?;
+        let _deleted_status = stmt.execute([device_id])?;
+        
+        // Finally, delete the device itself
+        let mut stmt = conn.prepare("DELETE FROM devices WHERE id = ?1")?;
+        let _deleted_device = stmt.execute([device_id])?;
+        
+        // Commit the transaction
+        conn.execute("COMMIT", [])?;
+        
+        info!("Deleted device {} and {} associated tags", device_id, deleted_tags);
+        Ok(())
+    }
+
     // Schedule Group CRUD operations
     pub async fn get_schedule_groups(&self) -> Result<Vec<ScheduleGroup>> {
         let conn = self.connection.lock().await;
