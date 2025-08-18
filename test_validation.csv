@@ -1,0 +1,2 @@
+Device Brand,Device Model,AVA Type,MPPT,INPUT,Data Label,Address,Size,Modbus Type,Divider,Register Type
+TestBrand,TestModel,PowerMeter,,,Power Reading,5001,1,U16,10,input

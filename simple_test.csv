@@ -1,0 +1,2 @@
+Tag Name,Description,Unit,Data Type,Access,Minimum value,Maximum value,AVA Type,Device Type,
+TestTag1,Test Description,kW,REAL,R,0,100,PowerMeter,Inverter,

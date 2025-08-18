@@ -1,0 +1,10 @@
+Device Brand,Device Model,AVA Type,MPPT,INPUT,Data Label,Address,Size,Modbus Type,Divider,Register Type
+Sungrow,Logger 1000B,Plant,,,Real-time Active Power,8006,2,U32,1000,input
+Sungrow,Logger 1000B,Plant,,,Daily Yield,8008,2,U32,1,input
+Sungrow,Logger 1000B,Plant,,,Real-time Reactive Power,8010,2,I32,1000,input
+Sungrow,Logger 1000B,Plant,,,Total Yield,8012,2,U32,1,input
+Sungrow,Logger 1000B,Plant,,,Total DC power,8061,2,U32,1000,input
+Sungrow,Logger 1000B,Plant,,,Set Active Power kW,8002,2,U32,10,holding
+Sungrow,Logger 1000B,Plant,,,Set Active Power %,8004,2,U32,100,holding
+Sungrow,Logger 1000B,Plant,,,Set Reactive Power kVar,8006,2,I32,10,holding
+Sungrow,Logger 1000B,Plant,,,Set PF,8010,2,I32,100,holding

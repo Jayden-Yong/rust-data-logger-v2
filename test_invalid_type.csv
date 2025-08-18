@@ -1,0 +1,2 @@
+Device Brand,Device Model,AVA Type,MPPT,INPUT,Data Label,Address,Size,Modbus Type,Divider,Register Type
+Janitza,UMG604,PowerMeter,1,,Voltage_L1,100,2,INVALID_TYPE,1,holding

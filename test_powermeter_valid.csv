@@ -1,0 +1,5 @@
+Device Brand,Device Model,AVA Type,MPPT,INPUT,Data Label,Address,Size,Modbus Type,Divider,Register Type
+Janitza,UMG604,PowerMeter,1,,Voltage_L1,100,2,FLOAT,1,holding
+Janitza,UMG604,PowerMeter,2,,Current_L1,200,2,FLOAT,1,holding
+TestCorp,WeatherMax,Weather Station,1,,Temperature,300,2,FLOAT,1,holding
+TestCorp,PowerPlant,Plant,1,,Output,400,2,FLOAT,1,holding

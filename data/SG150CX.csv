@@ -1,0 +1,81 @@
+Device Brand,Device Model,customer,AVA Type,MPPT,INPUT,Data Label,Address,Size,Modbus Type,Divider,Register Type
+Sungrow,SG150CX,CMES,Inverter,,,Daily Yield,5002,1,U16,10,input
+Sungrow,SG150CX,CMES,Inverter,,,Total Yield,5003,2,U32,1,input
+Sungrow,SG150CX,CMES,Inverter,,,Total Operation Time,5005,2,U32,1,input
+Sungrow,SG150CX,CMES,Inverter,,,Internal Air Temperature,5007,1,U16,10,input
+Sungrow,SG150CX,CMES,Inverter,,,Total DC Power,5016,2,U32,1000,input
+Sungrow,SG150CX,CMES,Inverter,,,A-B Line Voltage/Phase A Voltage,5018,1,U16,10,input
+Sungrow,SG150CX,CMES,Inverter,,,B-C Line Voltage/Phase B Voltage,5019,1,U16,10,input
+Sungrow,SG150CX,CMES,Inverter,,,C-A Line Voltage/Phase C Voltage,5020,1,U16,10,input
+Sungrow,SG150CX,CMES,Inverter,,,Phase A Current,5021,1,U16,10,input
+Sungrow,SG150CX,CMES,Inverter,,,Phase B Current,5022,1,U16,10,input
+Sungrow,SG150CX,CMES,Inverter,,,Phase C Current,5023,1,U16,10,input
+Sungrow,SG150CX,CMES,Inverter,,,Active Power,5030,2,U32,1000,input
+Sungrow,SG150CX,CMES,Inverter,,,Reactive Pow,5032,2,I32,1000,input
+Sungrow,SG150CX,CMES,Inverter,,,PF,5034,1,I16,1000,input
+Sungrow,SG150CX,CMES,Inverter,,,Grid Frequency,5035,1,U16,10,input
+Sungrow,SG150CX,CMES,Inverter,,,SG System State,5037,1,U16,1,input
+Sungrow,SG150CX,CMES,Inverter,,,Rated Reactive Power Output,5048,1,U16,10,input
+Sungrow,SG150CX,CMES,Inverter,,,Parallel Ground Impedance,5070,1,U16,1,input
+Sungrow,SG150CX,CMES,Inverter,,,SG Running State,5080,2,U32,1,input
+Sungrow,SG150CX,CMES,Inverter,,,Daily Operation Time,5112,1,U16,1,input
+Sungrow,SG150CX,CMES,Inverter,,,Monthly Yield,5127,2,U32,10,input
+Sungrow,SG150CX,CMES,Inverter,,,Total Yield,5143,2,U32,10,input
+Sungrow,SG150CX,CMES,Inverter,,,SG Alarm Code 1,5044,1,U16,1,input
+Sungrow,SG150CX,CMES,Inverter,,,Set Active Power %,31204,1,U16,10,holding
+Sungrow,SG150CX,CMES,MPPT,1,,Udc,5010,1,U16,10,input
+Sungrow,SG150CX,CMES,MPPT,1,,Idc,5011,1,U16,10,input
+Sungrow,SG150CX,CMES,MPPT,2,,Udc,5012,1,U16,10,input
+Sungrow,SG150CX,CMES,MPPT,2,,Idc,5013,1,U16,10,input
+Sungrow,SG150CX,CMES,MPPT,3,,Udc,5014,1,U16,10,input
+Sungrow,SG150CX,CMES,MPPT,3,,Idc,5015,1,U16,10,input
+Sungrow,SG150CX,CMES,MPPT,4,,Udc,5114,1,U16,10,input
+Sungrow,SG150CX,CMES,MPPT,4,,Idc,5115,1,U16,10,input
+Sungrow,SG150CX,CMES,MPPT,5,,Udc,5116,1,U16,10,input
+Sungrow,SG150CX,CMES,MPPT,5,,Idc,5117,1,U16,10,input
+Sungrow,SG150CX,CMES,MPPT,6,,Udc,5118,1,U16,10,input
+Sungrow,SG150CX,CMES,MPPT,6,,Idc,5119,1,U16,10,input
+Sungrow,SG150CX,CMES,MPPT,7,,Udc,5120,1,U16,10,input
+Sungrow,SG150CX,CMES,MPPT,7,,Idc,5121,1,U16,10,input
+Sungrow,SG150CX,CMES,String,1,1,Idc,7012,1,U16,100,input
+Sungrow,SG150CX,CMES,String,1,1,Udc,5010,1,U16,10,input
+Sungrow,SG150CX,CMES,String,1,2,Idc,7013,1,U16,100,input
+Sungrow,SG150CX,CMES,String,1,2,Udc,5010,1,U16,10,input
+Sungrow,SG150CX,CMES,String,1,3,Idc,7014,1,U16,100,input
+Sungrow,SG150CX,CMES,String,1,3,Udc,5010,1,U16,10,input
+Sungrow,SG150CX,CMES,String,2,4,Idc,7015,1,U16,100,input
+Sungrow,SG150CX,CMES,String,2,4,Udc,5012,1,U16,10,input
+Sungrow,SG150CX,CMES,String,2,5,Idc,7016,1,U16,100,input
+Sungrow,SG150CX,CMES,String,2,5,Udc,5012,1,U16,10,input
+Sungrow,SG150CX,CMES,String,2,6,Idc,7017,1,U16,100,input
+Sungrow,SG150CX,CMES,String,2,6,Udc,5012,1,U16,10,input
+Sungrow,SG150CX,CMES,String,3,7,Idc,7018,1,U16,100,input
+Sungrow,SG150CX,CMES,String,3,7,Udc,5014,1,U16,10,input
+Sungrow,SG150CX,CMES,String,3,8,Idc,7019,1,U16,100,input
+Sungrow,SG150CX,CMES,String,3,8,Udc,5014,1,U16,10,input
+Sungrow,SG150CX,CMES,String,3,9,Idc,7020,1,U16,100,input
+Sungrow,SG150CX,CMES,String,3,9,Udc,5014,1,U16,10,input
+Sungrow,SG150CX,CMES,String,4,10,Idc,7021,1,U16,100,input
+Sungrow,SG150CX,CMES,String,4,10,Udc,5114,1,U16,10,input
+Sungrow,SG150CX,CMES,String,4,11,Idc,7022,1,U16,100,input
+Sungrow,SG150CX,CMES,String,4,11,Udc,5114,1,U16,10,input
+Sungrow,SG150CX,CMES,String,4,12,Idc,7023,1,U16,100,input
+Sungrow,SG150CX,CMES,String,4,12,Udc,5114,1,U16,10,input
+Sungrow,SG150CX,CMES,String,5,13,Idc,7024,1,U16,100,input
+Sungrow,SG150CX,CMES,String,5,13,Udc,5116,1,U16,10,input
+Sungrow,SG150CX,CMES,String,5,14,Idc,7025,1,U16,100,input
+Sungrow,SG150CX,CMES,String,5,14,Udc,5116,1,U16,10,input
+Sungrow,SG150CX,CMES,String,5,15,Idc,7026,1,U16,100,input
+Sungrow,SG150CX,CMES,String,5,15,Udc,5116,1,U16,10,input
+Sungrow,SG150CX,CMES,String,6,16,Idc,7027,1,U16,100,input
+Sungrow,SG150CX,CMES,String,6,16,Udc,5118,1,U16,10,input
+Sungrow,SG150CX,CMES,String,6,17,Idc,7028,1,U16,100,input
+Sungrow,SG150CX,CMES,String,6,17,Udc,5118,1,U16,10,input
+Sungrow,SG150CX,CMES,String,6,18,Idc,7029,1,U16,100,input
+Sungrow,SG150CX,CMES,String,6,18,Udc,5118,1,U16,10,input
+Sungrow,SG150CX,CMES,String,7,19,Idc,7030,1,U16,100,input
+Sungrow,SG150CX,CMES,String,7,19,Udc,5120,1,U16,10,input
+Sungrow,SG150CX,CMES,String,7,20,Idc,7031,1,U16,100,input
+Sungrow,SG150CX,CMES,String,7,20,Udc,5120,1,U16,10,input
+Sungrow,SG150CX,CMES,String,7,21,Idc,7032,1,U16,100,input
+Sungrow,SG150CX,CMES,String,7,21,Udc,5120,1,U16,10,input

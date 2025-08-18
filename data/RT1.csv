@@ -1,0 +1,5 @@
+Device Brand,Device Model,AVA Type,MPPT,INPUT,Data Label,Address,Size,Modbus Type,Divider,Register Type
+Kipp and Zonen,RT1,Weather Station,,,RT1 Status,3,1,U16,1,holding
+Kipp and Zonen,RT1,Weather Station,,,P-radiation-I,5,1,I16,1,holding
+Kipp and Zonen,RT1,Weather Station,,,Temp-PV Module,8,1,I16,10,holding
+Kipp and Zonen,RT1,Weather Station,,,Power Supply Voltage,9,1,I16,10,holding

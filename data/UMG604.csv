@@ -1,0 +1,24 @@
+Device Brand,Device Model,AVA Type,MPPT,INPUT,Data Label,Address,Size,Modbus Type,Divider,StringNumber,MpptNumber,Register Type
+Janitza,UMG604,PowerMeter,,,total_pos_active_energy,9851,2,F32,1000,,,holding
+Janitza,UMG604,PowerMeter,,,rate_1_pos_active_energy,9887,2,F32,1000,,,holding
+Janitza,UMG604,PowerMeter,,,rate_2_pos_active_energy,9875,2,F32,1000,,,holding
+Janitza,UMG604,PowerMeter,,,rate_3_pos_active_energy,14412,2,F32,1000,,,holding
+Janitza,UMG604,PowerMeter,,,total_neg_active_energy,9863,2,F32,1000,,,holding
+Janitza,UMG604,PowerMeter,,,rate_1_neg_active_energy,9911,2,F32,1000,,,holding
+Janitza,UMG604,PowerMeter,,,rate_2_neg_active_energy,9899,2,F32,1000,,,holding
+Janitza,UMG604,PowerMeter,,,rate_3_neg_active_energy,14436,2,F32,1000,,,holding
+Janitza,UMG604,PowerMeter,,,total_pos_reactive_energy,9923,2,F32,1000,,,holding
+Janitza,UMG604,PowerMeter,,,total_neg_reactive_energy,9935,2,F32,1000,,,holding
+Janitza,UMG604,PowerMeter,,,Phase A voltage,19000,2,F32,1,,,holding
+Janitza,UMG604,PowerMeter,,,Phase B voltage,19002,2,F32,1,,,holding
+Janitza,UMG604,PowerMeter,,,Phase C voltage,19004,2,F32,1,,,holding
+Janitza,UMG604,PowerMeter,,,Phase A current,19012,2,F32,1,,,holding
+Janitza,UMG604,PowerMeter,,,Phase B current,19014,2,F32,1,,,holding
+Janitza,UMG604,PowerMeter,,,Phase C current,19016,2,F32,1,,,holding
+Janitza,UMG604,PowerMeter,,,total_pos_active_power,19026,2,F32,1000,,,holding
+Janitza,UMG604,PowerMeter,,,A_pos_active_power,19020,2,F32,1000,,,holding
+Janitza,UMG604,PowerMeter,,,B_pos_active_power,19022,2,F32,1000,,,holding
+Janitza,UMG604,PowerMeter,,,C_pos_active_power,19024,2,F32,1000,,,holding
+Janitza,UMG604,PowerMeter,,,total_pos_reactive_power,19042,2,F32,1000,,,holding
+Janitza,UMG604,PowerMeter,,,power_factor_total,19636,2,F32,1,,,holding
+Janitza,UMG604,PowerMeter,,,frequency,19050,2,F32,1,,,holding

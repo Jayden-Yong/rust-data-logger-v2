@@ -164,14 +164,14 @@ impl ModbusTcpCsvParserService {
             }
 
             // Validate AVA Type
-            let valid_ava_types = ["Inverter", "String", "MPPT", "Battery", "Meter"];
+            let valid_ava_types = ["Inverter", "String", "MPPT", "Battery", "Meter", "Weather Station", "PowerMeter", "Plant"];
             if !valid_ava_types.contains(&record.ava_type.as_str()) {
                 return Err(anyhow!("Row {}: Invalid AVA Type '{}'. Valid types: {:?}", 
                     row_number, record.ava_type, valid_ava_types));
             }
 
             // Validate modbus type
-            let valid_modbus_types = ["U16", "I16", "U32", "I32", "FLOAT", "DOUBLE"];
+            let valid_modbus_types = ["U16", "I16", "U32", "I32", "FLOAT", "DOUBLE", "F32"];
             if !valid_modbus_types.contains(&record.modbus_type.as_str()) {
                 return Err(anyhow!("Row {}: Invalid Modbus Type '{}'. Valid types: {:?}", 
                     row_number, record.modbus_type, valid_modbus_types));
