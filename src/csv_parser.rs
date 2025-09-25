@@ -10,41 +10,43 @@ impl ModbusTcpCsvParserService {
         ModbusTcpCsvParserService
     }
 
-    pub fn parse_csv<R: Read>(&self, reader: R) -> Result<Vec<CreateModbusTcpTagRegister>> {
-        let mut csv_reader = ReaderBuilder::new()
-            .has_headers(true)
-            .from_reader(reader);
+    // NOTE: This method is unused - only parse_csv_with_device_model_and_manufacturer is used
+    // pub fn parse_csv<R: Read>(&self, reader: R) -> Result<Vec<CreateModbusTcpTagRegister>> {
+    //     let mut csv_reader = ReaderBuilder::new()
+    //         .has_headers(true)
+    //         .from_reader(reader);
+    //
+    //     let mut tag_registers = Vec::new();
+    //
+    //     for (row_index, result) in csv_reader.deserialize().enumerate() {
+    //         let record: CsvModbusTcpTagRecord = result
+    //             .map_err(|e| anyhow!("CSV parsing error at row {}: {}", row_index + 2, e))?;
+    //         
+    //         let tag_register = self.convert_csv_record_to_create_tag_register(record, row_index + 2)?;
+    //         tag_registers.push(tag_register);
+    //     }
+    //
+    //     Ok(tag_registers)
+    // }
 
-        let mut tag_registers = Vec::new();
-
-        for (row_index, result) in csv_reader.deserialize().enumerate() {
-            let record: CsvModbusTcpTagRecord = result
-                .map_err(|e| anyhow!("CSV parsing error at row {}: {}", row_index + 2, e))?;
-            
-            let tag_register = self.convert_csv_record_to_create_tag_register(record, row_index + 2)?;
-            tag_registers.push(tag_register);
-        }
-
-        Ok(tag_registers)
-    }
-
-    pub fn parse_csv_with_device_model<R: Read>(&self, reader: R, device_model_name: &str) -> Result<Vec<CreateModbusTcpTagRegister>> {
-        let mut csv_reader = ReaderBuilder::new()
-            .has_headers(true)
-            .from_reader(reader);
-
-        let mut tag_registers = Vec::new();
-
-        for (row_index, result) in csv_reader.deserialize().enumerate() {
-            let record: CsvModbusTcpTagRecord = result
-                .map_err(|e| anyhow!("CSV parsing error at row {}: {}", row_index + 2, e))?;
-            
-            let tag_register = self.convert_csv_record_to_create_tag_register_with_device_model(record, device_model_name, row_index + 2)?;
-            tag_registers.push(tag_register);
-        }
-
-        Ok(tag_registers)
-    }
+    // NOTE: This method is unused - only parse_csv_with_device_model_and_manufacturer is used
+    // pub fn parse_csv_with_device_model<R: Read>(&self, reader: R, device_model_name: &str) -> Result<Vec<CreateModbusTcpTagRegister>> {
+    //     let mut csv_reader = ReaderBuilder::new()
+    //         .has_headers(true)
+    //         .from_reader(reader);
+    //
+    //     let mut tag_registers = Vec::new();
+    //
+    //     for (row_index, result) in csv_reader.deserialize().enumerate() {
+    //         let record: CsvModbusTcpTagRecord = result
+    //             .map_err(|e| anyhow!("CSV parsing error at row {}: {}", row_index + 2, e))?;
+    //         
+    //         let tag_register = self.convert_csv_record_to_create_tag_register_with_device_model(record, device_model_name, row_index + 2)?;
+    //         tag_registers.push(tag_register);
+    //     }
+    //
+    //     Ok(tag_registers)
+    // }
 
     pub fn parse_csv_with_device_model_and_manufacturer<R: Read>(&self, reader: R, device_model_name: &str, manufacturer: &str) -> Result<Vec<CreateModbusTcpTagRegister>> {
         println!("DEBUG: parse_csv_with_device_model_and_manufacturer called with device_model_name: {} and manufacturer: {}", device_model_name, manufacturer);
@@ -66,46 +68,48 @@ impl ModbusTcpCsvParserService {
         Ok(tag_registers)
     }
 
-    fn convert_csv_record_to_create_tag_register(
-        &self, 
-        record: CsvModbusTcpTagRecord, 
-        row_number: usize
-    ) -> Result<CreateModbusTcpTagRegister> {
-        Ok(CreateModbusTcpTagRegister {
-            device_brand: record.device_brand.trim().to_string(),
-            device_model: record.device_model.trim().to_string(),
-            ava_type: record.ava_type.trim().to_string(),
-            mppt: self.parse_optional_int_from_string(&record.mppt, "MPPT", row_number)?,
-            input: self.parse_optional_int_from_string(&record.input, "INPUT", row_number)?,
-            data_label: record.data_label.trim().to_string(),
-            address: record.address,
-            size: record.size,
-            modbus_type: record.modbus_type.trim().to_string(),
-            divider: record.divider,
-            register_type: record.register_type.trim().to_string(),
-        })
-    }
+    // NOTE: This helper method is unused - only convert_csv_record_to_create_tag_register_with_device_model_and_manufacturer is used
+    // fn convert_csv_record_to_create_tag_register(
+    //     &self, 
+    //     record: CsvModbusTcpTagRecord, 
+    //     row_number: usize
+    // ) -> Result<CreateModbusTcpTagRegister> {
+    //     Ok(CreateModbusTcpTagRegister {
+    //         device_brand: record.device_brand.trim().to_string(),
+    //         device_model: record.device_model.trim().to_string(),
+    //         ava_type: record.ava_type.trim().to_string(),
+    //         mppt: self.parse_optional_int_from_string(&record.mppt, "MPPT", row_number)?,
+    //         input: self.parse_optional_int_from_string(&record.input, "INPUT", row_number)?,
+    //         data_label: record.data_label.trim().to_string(),
+    //         address: record.address,
+    //         size: record.size,
+    //         modbus_type: record.modbus_type.trim().to_string(),
+    //         divider: record.divider,
+    //         register_type: record.register_type.trim().to_string(),
+    //     })
+    // }
 
-    fn convert_csv_record_to_create_tag_register_with_device_model(
-        &self, 
-        record: CsvModbusTcpTagRecord, 
-        device_model_name: &str,
-        row_number: usize
-    ) -> Result<CreateModbusTcpTagRegister> {
-        Ok(CreateModbusTcpTagRegister {
-            device_brand: record.device_brand.trim().to_string(),
-            device_model: device_model_name.to_string(), // Use provided device model name instead of CSV column
-            ava_type: record.ava_type.trim().to_string(),
-            mppt: self.parse_optional_int_from_string(&record.mppt, "MPPT", row_number)?,
-            input: self.parse_optional_int_from_string(&record.input, "INPUT", row_number)?,
-            data_label: record.data_label.trim().to_string(),
-            address: record.address,
-            size: record.size,
-            modbus_type: record.modbus_type.trim().to_string(),
-            divider: record.divider,
-            register_type: record.register_type.trim().to_string(),
-        })
-    }
+    // NOTE: This helper method is unused - only convert_csv_record_to_create_tag_register_with_device_model_and_manufacturer is used
+    // fn convert_csv_record_to_create_tag_register_with_device_model(
+    //     &self, 
+    //     record: CsvModbusTcpTagRecord, 
+    //     device_model_name: &str,
+    //     row_number: usize
+    // ) -> Result<CreateModbusTcpTagRegister> {
+    //     Ok(CreateModbusTcpTagRegister {
+    //         device_brand: record.device_brand.trim().to_string(),
+    //         device_model: device_model_name.to_string(), // Use provided device model name instead of CSV column
+    //         ava_type: record.ava_type.trim().to_string(),
+    //         mppt: self.parse_optional_int_from_string(&record.mppt, "MPPT", row_number)?,
+        //         input: self.parse_optional_int_from_string(&record.input, "INPUT", row_number)?,
+    //         data_label: record.data_label.trim().to_string(),
+    //         address: record.address,
+    //         size: record.size,
+    //         modbus_type: record.modbus_type.trim().to_string(),
+    //         divider: record.divider,
+    //         register_type: record.register_type.trim().to_string(),
+    //     })
+    // }
 
     fn parse_optional_int_from_string(
         &self, 

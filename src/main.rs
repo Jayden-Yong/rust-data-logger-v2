@@ -2,11 +2,13 @@ use axum::{
     response::{Html, IntoResponse},
     routing::{get, post},
     Router,
+    // http::Uri,
 };
 use socketioxide::SocketIo;
 use std::{sync::Arc, net::SocketAddr};
 use tokio::net::TcpListener;
 use tower_http::cors::CorsLayer;
+use tower_http::services::ServeDir;
 use tracing::info;
 
 mod config;
@@ -17,6 +19,7 @@ mod logging;
 mod api;
 mod websocket;
 mod csv_parser;
+pub mod tb_rust_client;
 
 use config::{AppConfig, load_config};
 use database::Database;
@@ -30,7 +33,13 @@ pub struct AppState {
 }
 
 async fn serve_index() -> impl IntoResponse {
-    let html_content = "<!DOCTYPE html>
+    let index_path = "web/build/index.html";
+    
+    match tokio::fs::read_to_string(index_path).await {
+        Ok(content) => Html(content),
+        Err(_) => {
+            // Fallback HTML if React build is not available
+            let fallback_html = "<!DOCTYPE html>
 <html lang=\"en\">
   <head>
     <meta charset=\"utf-8\" />
@@ -71,12 +80,46 @@ async fn serve_index() -> impl IntoResponse {
     </div>
   </body>
 </html>";
-    Html(html_content)
+            Html(fallback_html.to_string())
+        }
+    }
 }
 
-async fn serve_static() -> impl IntoResponse {
+async fn serve_static(uri: axum::http::Uri) -> impl IntoResponse {
+    let path = uri.path();
+    
+    // Serve static files from web/build directory
+    let file_path = format!("web/build{}", path);
+    
+    // Check if file exists
+    if std::path::Path::new(&file_path).exists() {
+        match tokio::fs::read(&file_path).await {
+            Ok(contents) => {
+                let content_type = match std::path::Path::new(&file_path)
+                    .extension()
+                    .and_then(|ext| ext.to_str())
+                {
+                    Some("html") => "text/html",
+                    Some("css") => "text/css",
+                    Some("js") => "application/javascript",
+                    Some("json") => "application/json",
+                    Some("png") => "image/png",
+                    Some("jpg") | Some("jpeg") => "image/jpeg",
+                    Some("ico") => "image/x-icon",
+                    _ => "application/octet-stream",
+                };
+                
+                return (
+                    [(axum::http::header::CONTENT_TYPE, content_type)],
+                    contents,
+                ).into_response();
+            }
+            Err(_) => {}
+        }
+    }
+    
     // Fallback to index for client-side routing
-    serve_index().await
+    serve_index().await.into_response()
 }
 
 #[tokio::main]
@@ -134,6 +177,10 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/devices-enhanced/:id", get(api::get_device_enhanced).put(api::update_device_with_tags).delete(api::delete_device))
         .route("/api/devices/:id/tags", get(api::get_device_tags_api))
         
+        // Device filtering by sync status
+        .route("/api/devices-unsynced", get(api::get_unsynced_devices))
+        .route("/api/devices-by-group/:group_id", get(api::get_devices_by_group))
+        
         // Schedule group management
         .route("/api/schedule-groups", get(api::get_schedule_groups).post(api::create_schedule_group))
         .route("/api/schedule-groups/:id", get(api::get_schedule_group).put(api::update_schedule_group).delete(api::delete_schedule_group))
@@ -142,12 +189,25 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/modbus-tcp-tag-registers", get(api::get_modbus_tcp_tag_registers))
         .route("/api/modbus-tcp-tag-registers/upload-csv", post(api::upload_modbus_tcp_csv_tags))
         
+        // ThingsBoard API endpoints
+        .route("/api/thingsboard/entity-groups", get(api::get_thingsboard_entity_groups))
+        .route("/api/sync-devices-to-thingsboard", post(api::sync_devices_to_thingsboard))
+        .route("/api/generate-device-catalog", post(api::generate_device_catalog))
+        
+        // File management endpoints
+        .route("/api/files/catalogs", get(api::list_catalog_files))
+        .route("/api/files/catalogs/:filename", get(api::download_catalog_file).delete(api::delete_catalog_file))
+        
         // WebSocket endpoint
         .route("/socket.io/*path", get(websocket::socket_handler))
         
-        // Static file serving
+        // Static file serving - serve React build from web/build
+        .nest_service("/static", ServeDir::new("web/build/static"))
         .route("/", get(serve_index))
         .route("/*path", get(serve_static))
+
+        // docker health check endpoint
+        .route("/api/health", get(crate::api::health_check))
         
         // Add middleware
         .layer(CorsLayer::permissive())

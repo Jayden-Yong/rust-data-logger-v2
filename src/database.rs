@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use anyhow::Result;
-use tracing::info;
+use tracing::{info, warn};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LogEntry {
@@ -61,6 +61,8 @@ pub struct DeviceInstance {
     pub timeout_ms: u32,
     pub retry_count: u32,
     pub protocol_config: String, // JSON serialized protocol config
+    pub tb_device_id: Option<String>,
+    pub tb_group_id: Option<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -260,6 +262,18 @@ impl Database {
         // Add size column to device_tags if it doesn't exist (migration)
         let _ = conn.execute(
             "ALTER TABLE device_tags ADD COLUMN size INTEGER DEFAULT 1",
+            [],
+        ); // Ignore error if column already exists
+        
+        // Add tb_device_id column to devices table if it doesn't exist (migration)
+        let _ = conn.execute(
+            "ALTER TABLE devices ADD COLUMN tb_device_id TEXT",
+            [],
+        ); // Ignore error if column already exists
+        
+        // Add tb_group_id column to devices table if it doesn't exist (migration)
+        let _ = conn.execute(
+            "ALTER TABLE devices ADD COLUMN tb_group_id TEXT",
             [],
         ); // Ignore error if column already exists
         conn.execute(
@@ -913,8 +927,8 @@ impl Database {
 
         conn.execute(
             "INSERT INTO devices 
-             (id, name, model_id, enabled, polling_interval_ms, timeout_ms, retry_count, protocol_config, created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+             (id, name, model_id, enabled, polling_interval_ms, timeout_ms, retry_count, protocol_config, tb_device_id, tb_group_id, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
             params![
                 device.id,
                 device.name,
@@ -924,6 +938,8 @@ impl Database {
                 device.timeout_ms,
                 device.retry_count,
                 device.protocol_config,
+                device.tb_device_id,
+                device.tb_group_id,
                 created_str,
                 updated_str
             ],
@@ -937,13 +953,13 @@ impl Database {
         
         let mut stmt = conn.prepare(
             "SELECT id, name, model_id, enabled, polling_interval_ms, timeout_ms, retry_count, 
-                    protocol_config, created_at, updated_at 
+                    protocol_config, tb_device_id, tb_group_id, created_at, updated_at 
              FROM devices ORDER BY name"
         )?;
 
         let rows = stmt.query_map([], |row| {
-            let created_str: String = row.get(8)?;
-            let updated_str: String = row.get(9)?;
+            let created_str: String = row.get("created_at")?;
+            let updated_str: String = row.get("updated_at")?;
             let created_at = DateTime::parse_from_rfc3339(&created_str)
                 .map_err(|_| rusqlite::Error::InvalidColumnType(8, "created_at".to_string(), rusqlite::types::Type::Text))?
                 .with_timezone(&Utc);
@@ -960,6 +976,8 @@ impl Database {
                 timeout_ms: row.get::<_, i32>(5)? as u32,
                 retry_count: row.get::<_, i32>(6)? as u32,
                 protocol_config: row.get(7)?,
+                tb_device_id: row.get("tb_device_id")?,
+                tb_group_id: row.get("tb_group_id")?,
                 created_at,
                 updated_at,
             })
@@ -978,13 +996,13 @@ impl Database {
         
         let mut stmt = conn.prepare(
             "SELECT id, name, model_id, enabled, polling_interval_ms, timeout_ms, retry_count, 
-                    protocol_config, created_at, updated_at 
+                    protocol_config, tb_device_id, tb_group_id, created_at, updated_at 
              FROM devices WHERE id = ?1"
         )?;
 
         let mut rows = stmt.query_map([device_id], |row| {
-            let created_str: String = row.get(8)?;
-            let updated_str: String = row.get(9)?;
+            let created_str: String = row.get(10)?;
+            let updated_str: String = row.get(11)?;
             let created_at = DateTime::parse_from_rfc3339(&created_str)
                 .map_err(|_| rusqlite::Error::InvalidColumnType(8, "created_at".to_string(), rusqlite::types::Type::Text))?
                 .with_timezone(&Utc);
@@ -1001,6 +1019,8 @@ impl Database {
                 timeout_ms: row.get::<_, i32>(5)? as u32,
                 retry_count: row.get::<_, i32>(6)? as u32,
                 protocol_config: row.get(7)?,
+                tb_device_id: row.get("tb_device_id")?,
+                tb_group_id: row.get("tb_group_id")?,
                 created_at,
                 updated_at,
             })
@@ -1083,8 +1103,8 @@ impl Database {
         conn.execute(
             "UPDATE devices 
              SET name = ?1, model_id = ?2, enabled = ?3, polling_interval_ms = ?4, 
-                 timeout_ms = ?5, retry_count = ?6, protocol_config = ?7, updated_at = ?8
-             WHERE id = ?9",
+                 timeout_ms = ?5, retry_count = ?6, protocol_config = ?7, tb_device_id = ?8, tb_group_id = ?9, updated_at = ?10
+             WHERE id = ?11",
             params![
                 device.name,
                 device.model_id,
@@ -1093,12 +1113,106 @@ impl Database {
                 device.timeout_ms,
                 device.retry_count,
                 device.protocol_config,
+                device.tb_device_id,
+                device.tb_group_id,
                 updated_str,
                 device.id
             ],
         )?;
 
         Ok(())
+    }
+
+    /// Get unsynced devices (devices without ThingsBoard device ID and group ID)
+    pub async fn get_unsynced_devices(&self) -> Result<Vec<DeviceInstance>> {
+        let conn = self.connection.lock().await;
+        
+        let mut stmt = conn.prepare(
+            "SELECT id, name, model_id, enabled, polling_interval_ms, timeout_ms, retry_count, 
+                    protocol_config, tb_device_id, tb_group_id, created_at, updated_at 
+             FROM devices 
+             WHERE (tb_device_id IS NULL OR tb_device_id = '') AND (tb_group_id IS NULL OR tb_group_id = '')
+             ORDER BY name"
+        )?;
+
+        let rows = stmt.query_map([], |row| {
+            let created_str: String = row.get("created_at")?;
+            let updated_str: String = row.get("updated_at")?;
+            let created_at = DateTime::parse_from_rfc3339(&created_str)
+                .map_err(|_| rusqlite::Error::InvalidColumnType(8, "created_at".to_string(), rusqlite::types::Type::Text))?
+                .with_timezone(&Utc);
+            let updated_at = DateTime::parse_from_rfc3339(&updated_str)
+                .map_err(|_| rusqlite::Error::InvalidColumnType(9, "updated_at".to_string(), rusqlite::types::Type::Text))?
+                .with_timezone(&Utc);
+
+            Ok(DeviceInstance {
+                id: row.get("id")?,
+                name: row.get("name")?,
+                model_id: row.get("model_id")?,
+                enabled: row.get("enabled")?,
+                polling_interval_ms: row.get::<_, i32>("polling_interval_ms")? as u32,
+                timeout_ms: row.get::<_, i32>("timeout_ms")? as u32,
+                retry_count: row.get::<_, i32>("retry_count")? as u32,
+                protocol_config: row.get("protocol_config")?,
+                tb_device_id: row.get("tb_device_id")?,
+                tb_group_id: row.get("tb_group_id")?,
+                created_at,
+                updated_at,
+            })
+        })?;
+
+        let mut devices = Vec::new();
+        for row in rows {
+            devices.push(row?);
+        }
+
+        Ok(devices)
+    }
+
+    /// Get devices by ThingsBoard group ID
+    pub async fn get_devices_by_group_id(&self, group_id: &str) -> Result<Vec<DeviceInstance>> {
+        let conn = self.connection.lock().await;
+        
+        let mut stmt = conn.prepare(
+            "SELECT id, name, model_id, enabled, polling_interval_ms, timeout_ms, retry_count, 
+                    protocol_config, tb_device_id, tb_group_id, created_at, updated_at 
+             FROM devices 
+             WHERE tb_group_id = ?1
+             ORDER BY name"
+        )?;
+
+        let rows = stmt.query_map([group_id], |row| {
+            let created_str: String = row.get("created_at")?;
+            let updated_str: String = row.get("updated_at")?;
+            let created_at = DateTime::parse_from_rfc3339(&created_str)
+                .map_err(|_| rusqlite::Error::InvalidColumnType(8, "created_at".to_string(), rusqlite::types::Type::Text))?
+                .with_timezone(&Utc);
+            let updated_at = DateTime::parse_from_rfc3339(&updated_str)
+                .map_err(|_| rusqlite::Error::InvalidColumnType(9, "updated_at".to_string(), rusqlite::types::Type::Text))?
+                .with_timezone(&Utc);
+
+            Ok(DeviceInstance {
+                id: row.get("id")?,
+                name: row.get("name")?,
+                model_id: row.get("model_id")?,
+                enabled: row.get("enabled")?,
+                polling_interval_ms: row.get::<_, i32>("polling_interval_ms")? as u32,
+                timeout_ms: row.get::<_, i32>("timeout_ms")? as u32,
+                retry_count: row.get::<_, i32>("retry_count")? as u32,
+                protocol_config: row.get("protocol_config")?,
+                tb_device_id: row.get("tb_device_id")?,
+                tb_group_id: row.get("tb_group_id")?,
+                created_at,
+                updated_at,
+            })
+        })?;
+
+        let mut devices = Vec::new();
+        for row in rows {
+            devices.push(row?);
+        }
+
+        Ok(devices)
     }
 
     pub async fn delete_device_tags(&self, device_id: &str) -> Result<()> {
@@ -1561,5 +1675,140 @@ impl Database {
         )?;
 
         Ok(result as u64)
+    }
+
+    /// Update local device with ThingsBoard device ID after sync
+    /// This maintains the relationship between local and ThingsBoard devices
+    /// without changing the primary key
+    pub async fn update_device_thingsboard_id(&self, local_device_id: &str, thingsboard_device_id: &str) -> Result<()> {
+        let conn = self.connection.lock().await;
+        
+        // Check if the local device exists
+        let mut stmt = conn.prepare("SELECT COUNT(*) FROM devices WHERE id = ?1")?;
+        let count: i64 = stmt.query_row([local_device_id], |row| row.get(0))?;
+        
+        if count == 0 {
+            return Err(anyhow::anyhow!("Local device with ID {} not found", local_device_id));
+        }
+        
+        // Update the tb_device_id field
+        let updated_str = Utc::now().to_rfc3339();
+        let mut stmt = conn.prepare(
+            "UPDATE devices SET tb_device_id = ?1, updated_at = ?2 WHERE id = ?3"
+        )?;
+        stmt.execute([thingsboard_device_id, &updated_str, local_device_id])?;
+        
+        info!("Successfully updated device {} with ThingsBoard ID: {}", local_device_id, thingsboard_device_id);
+        Ok(())
+    }
+
+    /// Batch update multiple devices with ThingsBoard device IDs and group IDs after sync
+    /// This is more efficient when updating many devices at once
+    pub async fn batch_update_devices_thingsboard_ids(&self, device_id_mappings: &[(String, String, String)]) -> Result<Vec<String>> {
+        if device_id_mappings.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let conn = self.connection.lock().await;
+        let mut successful_updates = Vec::new();
+        let mut failed_updates = Vec::new();
+        
+        // Start a transaction
+        conn.execute("BEGIN TRANSACTION", [])?;
+        
+        for (local_id, thingsboard_id, group_id) in device_id_mappings {
+            // Check if local device exists
+            let mut stmt = conn.prepare("SELECT COUNT(*) FROM devices WHERE id = ?1")?;
+            let local_exists: i64 = stmt.query_row([local_id], |row| row.get(0))?;
+            
+            if local_exists == 0 {
+                failed_updates.push(format!("Local device {} not found", local_id));
+                continue;
+            }
+            
+            // Update both tb_device_id and tb_group_id fields
+            let updated_str = Utc::now().to_rfc3339();
+            let mut stmt = conn.prepare("UPDATE devices SET tb_device_id = ?1, tb_group_id = ?2, updated_at = ?3 WHERE id = ?4")?;
+            
+            match stmt.execute([thingsboard_id, group_id, &updated_str, local_id]) {
+                Ok(_) => {
+                    successful_updates.push(format!("{} -> {} (group: {})", local_id, thingsboard_id, group_id));
+                    info!("Updated device {} with ThingsBoard ID: {} and Group ID: {}", local_id, thingsboard_id, group_id);
+                }
+                Err(e) => {
+                    failed_updates.push(format!("Failed to update {}: {}", local_id, e));
+                }
+            }
+        }
+        
+        if !failed_updates.is_empty() {
+            warn!("Some ThingsBoard ID updates failed: {:?}", failed_updates);
+        }
+        
+        // Commit the transaction
+        conn.execute("COMMIT", [])?;
+        
+        info!("Batch ThingsBoard ID update completed. Success: {}, Failed: {}", 
+              successful_updates.len(), failed_updates.len());
+        
+        Ok(successful_updates)
+    }
+
+    /// Get device AVA type based on the database flow:
+    /// devices.model_id -> device_models.id -> device_models.name -> modbus_tcp_tag_registers.device_model -> modbus_tcp_tag_registers.ava_type
+    /// For devices with multiple AVA types, prioritize in order: Inverter, PowerMeter, Meter, MPPT, String
+    pub async fn get_device_ava_type(&self, device_id: &str) -> Result<Option<String>> {
+        let conn = self.connection.lock().await;
+        
+        let mut stmt = conn.prepare("
+            SELECT DISTINCT mtr.ava_type
+            FROM devices d
+            JOIN device_models dm ON d.model_id = dm.id
+            JOIN modbus_tcp_tag_registers mtr ON dm.name = mtr.device_model
+            WHERE d.id = ?1
+            ORDER BY
+                CASE mtr.ava_type
+                    WHEN 'Inverter' THEN 1
+                    WHEN 'Weather Station' THEN 2
+                    WHEN 'PowerMeter' THEN 3
+                    WHEN 'Meter' THEN 4
+                    WHEN 'MPPT' THEN 5
+                    WHEN 'String' THEN 6
+                    ELSE 7
+                END
+            LIMIT 1
+        ")?;
+        
+        let result = stmt.query_row([device_id], |row| {
+            Ok(row.get::<_, String>(0)?)
+        });
+        
+        match result {
+            Ok(ava_type) => Ok(Some(ava_type)),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    /// Get device model name for a given device ID
+    pub async fn get_device_model_name(&self, device_id: &str) -> Result<Option<String>> {
+        let conn = self.connection.lock().await;
+        
+        let mut stmt = conn.prepare("
+            SELECT dm.name
+            FROM devices d
+            JOIN device_models dm ON d.model_id = dm.id
+            WHERE d.id = ?1
+        ")?;
+        
+        let result = stmt.query_row([device_id], |row| {
+            Ok(row.get::<_, String>(0)?)
+        });
+        
+        match result {
+            Ok(model_name) => Ok(Some(model_name)),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(e.into()),
+        }
     }
 }

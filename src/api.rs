@@ -11,6 +11,18 @@ use crate::config::{AppConfig, DeviceConfig, save_config};
 use crate::database::{LogEntry, DeviceModel, TagTemplate, DeviceInstance, DeviceTag, ScheduleGroup, ModbusTcpTagRegister};
 use crate::csv_parser::ModbusTcpCsvParserService;
 
+use serde_json::{json, Value};
+
+// docker health check endpoint
+pub async fn health_check() -> Result<Json<Value>, StatusCode> {
+    Ok(Json(json!({
+        "status": "healthy",
+        "timestamp": chrono::Utc::now().to_rfc3339(),
+        "service": "AVA Device Logger",
+        "version": env!("CARGO_PKG_VERSION")
+    })))
+}
+
 #[derive(Serialize, Deserialize)]
 pub struct ApiResponse<T> {
     pub success: bool,
@@ -39,6 +51,85 @@ impl<T> ApiResponse<T> {
             data: None,
             error: Some(message),
         }
+    }
+}
+
+/// Parses a ThingsBoard device name to extract device type and index
+/// Expected format: "PREFIX-T##" where T is type abbreviation and ## is index
+/// Examples:
+/// - "ACCV-P002-I01" -> Some(("Inverter", 1))
+/// - "GR-P001-S05" -> Some(("String", 5))
+/// - "CMES-PR084-I12" -> Some(("Inverter", 12))
+fn parse_device_name_for_type_and_index(device_name: &str, entity_group_name: &str) -> Option<(String, u32)> {
+    // Extract expected prefix from entity group name
+    let expected_prefix = extract_group_prefix_from_name(entity_group_name);
+    
+    // Check if device name starts with the expected prefix
+    if !device_name.starts_with(&expected_prefix) {
+        return None;
+    }
+    
+    // Remove prefix and dash to get the type-index part
+    let remaining = device_name.strip_prefix(&format!("{}-", expected_prefix))?;
+    
+    // Parse the type-index part (e.g., "I01", "S05", "PM01", "MT01", "WS01")
+    if remaining.len() >= 3 {
+        // Handle multi-character prefixes first (PM, MT, WS)
+        let device_type = if remaining.starts_with("PM") && remaining.len() >= 4 {
+            let index_str = &remaining[2..];
+            if let Ok(index) = index_str.parse::<u32>() {
+                return Some(("PowerMeter".to_string(), index));
+            }
+            return None;
+        } else if remaining.starts_with("MT") && remaining.len() >= 4 {
+            let index_str = &remaining[2..];
+            if let Ok(index) = index_str.parse::<u32>() {
+                return Some(("Meter".to_string(), index));
+            }
+            return None;
+        } else if remaining.starts_with("WS") && remaining.len() >= 4 {
+            let index_str = &remaining[2..];
+            if let Ok(index) = index_str.parse::<u32>() {
+                return Some(("Weather Station".to_string(), index));
+            }
+            return None;
+        } else {
+            // Handle single character prefixes
+            let type_char = remaining.chars().next()?;
+            let _index_str = &remaining[1..];
+            
+            // Convert type abbreviation back to full type name
+            match type_char {
+                'I' => "Inverter",
+                'S' => "String", 
+                'P' => "PlantBlock",
+                'D' => "Device",
+                _ => return None,
+            }
+        };
+        
+        // Parse the numeric index for single character prefixes
+        if let Ok(index) = remaining[1..].parse::<u32>() {
+            return Some((device_type.to_string(), index));
+        }
+    }
+    
+    None
+}
+
+/// Extracts the prefix from entity group name (same logic as in tb_rust_client.rs)
+fn extract_group_prefix_from_name(entity_group_name: &str) -> String {
+    let parts: Vec<&str> = entity_group_name.split('-').collect();
+    
+    if parts.len() >= 3 {
+        // Take first two parts separated by dash
+        format!("{}-{}", parts[0], parts[1])
+    } else if parts.len() == 2 {
+        // If only two parts, take both
+        format!("{}-{}", parts[0], parts[1])
+    } else {
+        // If only one part or empty, use as is
+        entity_group_name.to_string()
     }
 }
 
@@ -240,13 +331,15 @@ pub async fn get_device_models(
     }
 }
 
-#[derive(Deserialize)]
-pub struct CreateDeviceModelRequest {
-    pub name: String,
-    pub manufacturer: Option<String>,
-    pub protocol_type: String,
-    pub description: Option<String>,
-}
+// NOTE: This struct is unused - the create_device_model handler uses multipart form parsing instead
+// The actual struct used is in api_additions.rs
+// #[derive(Deserialize)]
+// pub struct CreateDeviceModelRequest {
+//     pub name: String,
+//     pub manufacturer: Option<String>,
+//     pub protocol_type: String,  
+//     pub description: Option<String>,
+// }
 
 pub async fn create_device_model(
     State(state): State<AppState>,
@@ -461,6 +554,8 @@ pub async fn create_device_with_tags(
         timeout_ms: request.timeout_ms,
         retry_count: request.retry_count,
         protocol_config: serde_json::to_string(&request.protocol_config).unwrap_or_default(),
+        tb_device_id: None,
+        tb_group_id: None,
         created_at: now,
         updated_at: now,
     };
@@ -576,6 +671,91 @@ pub async fn get_device_enhanced(
     })))
 }
 
+/// Get all devices that are not synced to ThingsBoard (tb_device_id is NULL)
+pub async fn get_unsynced_devices(
+    State(state): State<AppState>,
+) -> Result<Json<ApiResponse<Vec<DeviceWithTags>>>, StatusCode> {
+    let devices = match state.database.get_unsynced_devices().await {
+        Ok(devices) => devices,
+        Err(e) => {
+            error!("Failed to get unsynced devices: {}", e);
+            return Err(StatusCode::INTERNAL_SERVER_ERROR);
+        }
+    };
+
+    let mut devices_with_tags = Vec::new();
+    for device in devices {
+        let tags = match state.database.get_device_tags(&device.id).await {
+            Ok(tags) => tags,
+            Err(e) => {
+                error!("Failed to get tags for device {}: {}", device.id, e);
+                return Err(StatusCode::INTERNAL_SERVER_ERROR);
+            }
+        };
+
+        // Get device status from database
+        let device_status = state.database.get_device_status(&device.id).await.ok().flatten();
+        let status = device_status.as_ref().map(|s| s.status.clone());
+        let last_update = device_status.as_ref().map(|s| s.last_update.to_rfc3339());
+        
+        // Check if device is currently running
+        let is_running = state.logging_service.is_device_running(&device.id).await;
+
+        devices_with_tags.push(DeviceWithTags { 
+            device, 
+            tags, 
+            status,
+            is_running,
+            last_update,
+        });
+    }
+
+    Ok(Json(ApiResponse::success(devices_with_tags)))
+}
+
+/// Get all devices that belong to a specific ThingsBoard entity group
+pub async fn get_devices_by_group(
+    State(state): State<AppState>,
+    Path(group_id): Path<String>,
+) -> Result<Json<ApiResponse<Vec<DeviceWithTags>>>, StatusCode> {
+    let devices = match state.database.get_devices_by_group_id(&group_id).await {
+        Ok(devices) => devices,
+        Err(e) => {
+            error!("Failed to get devices for group {}: {}", group_id, e);
+            return Err(StatusCode::INTERNAL_SERVER_ERROR);
+        }
+    };
+
+    let mut devices_with_tags = Vec::new();
+    for device in devices {
+        let tags = match state.database.get_device_tags(&device.id).await {
+            Ok(tags) => tags,
+            Err(e) => {
+                error!("Failed to get tags for device {}: {}", device.id, e);
+                return Err(StatusCode::INTERNAL_SERVER_ERROR);
+            }
+        };
+
+        // Get device status from database
+        let device_status = state.database.get_device_status(&device.id).await.ok().flatten();
+        let status = device_status.as_ref().map(|s| s.status.clone());
+        let last_update = device_status.as_ref().map(|s| s.last_update.to_rfc3339());
+        
+        // Check if device is currently running
+        let is_running = state.logging_service.is_device_running(&device.id).await;
+
+        devices_with_tags.push(DeviceWithTags { 
+            device, 
+            tags, 
+            status,
+            is_running,
+            last_update,
+        });
+    }
+
+    Ok(Json(ApiResponse::success(devices_with_tags)))
+}
+
 pub async fn get_device_tags_api(
     State(state): State<AppState>,
     Path(device_id): Path<String>,
@@ -606,6 +786,8 @@ pub async fn update_device_with_tags(
         timeout_ms: request.timeout_ms,
         retry_count: request.retry_count,
         protocol_config: serde_json::to_string(&request.protocol_config).unwrap_or_default(),
+        tb_device_id: None,
+        tb_group_id: None,
         created_at: now, // This will be ignored in update
         updated_at: now,
     };
@@ -779,7 +961,8 @@ pub struct ModbusTcpTagQuery {
     pub device_brand: Option<String>,
     pub device_model: Option<String>,
     pub model_id: Option<String>,
-    pub ava_type: Option<String>,
+    // NOTE: ava_type field is unused in the handler - only model_id, device_brand, and device_model are checked
+    // pub ava_type: Option<String>,
 }
 
 pub async fn upload_modbus_tcp_csv_tags(
@@ -1004,6 +1187,497 @@ pub async fn debug_devices(
         Err(e) => {
             error!("Failed to get devices for debugging: {}", e);
             Err(StatusCode::INTERNAL_SERVER_ERROR)
+        }
+    }
+}
+
+// ThingsBoard API endpoints
+#[derive(Deserialize)]
+pub struct EntityGroupQuery {
+    pub group_type: Option<String>,
+}
+
+pub async fn get_thingsboard_entity_groups(
+    Query(params): Query<EntityGroupQuery>,
+) -> Result<Json<ApiResponse<Vec<crate::tb_rust_client::EntityGroup>>>, StatusCode> {
+    use crate::tb_rust_client::ThingsBoardClient;
+    
+    // Get group type from query parameters, default to "DEVICE" if not specified
+    let group_type = params.group_type.unwrap_or_else(|| "DEVICE".to_string());
+    
+    info!("Fetching ThingsBoard entity groups of type: {}", group_type);
+    
+    // TODO: These credentials should be configurable via environment variables or config file
+    let base_url = "https://monitoring.avaasia.co"; // Default ThingsBoard URL
+    let username = "jaydenyong28@gmail.com";
+    let password = "lalala88";
+    
+    let mut client = ThingsBoardClient::new(base_url);
+    
+    match client.login(username, password).await {
+        Ok(_) => {
+            info!("Successfully logged in to ThingsBoard");
+            
+            match client.get_all_entity_groups(&group_type).await {
+                Ok(entity_groups) => {
+                    info!("Successfully fetched {} entity groups", entity_groups.len());
+                    Ok(Json(ApiResponse::success(entity_groups)))
+                }
+                Err(e) => {
+                    error!("Failed to fetch entity groups: {}", e);
+                    Ok(Json(ApiResponse::error(format!("Failed to fetch entity groups: {}", e))))
+                }
+            }
+        }
+        Err(e) => {
+            error!("Failed to login to ThingsBoard: {}", e);
+            Ok(Json(ApiResponse::error(format!("Failed to login to ThingsBoard: {}", e))))
+        }
+    }
+}
+
+
+// create devices on thingsboard for selected device group
+#[derive(Deserialize)]
+pub struct SyncDevicesRequest {
+    pub entity_group_id: String,
+}
+
+#[derive(Serialize)]
+pub struct SyncDevicesResponse {
+    pub total_devices: usize,
+    pub created_count: usize,
+    pub failed_count: usize,
+    pub failed_devices: Vec<FailedDevice>,
+    pub updated_device_ids: Vec<DeviceIdUpdate>,
+    pub update_failed_count: usize,
+}
+
+#[derive(Serialize)]
+pub struct DeviceIdUpdate {
+    pub local_id: String,
+    pub thingsboard_id: String,
+    pub device_name: String,
+    pub device_type: String, // Add AVA type information
+}
+
+#[derive(Serialize)]
+pub struct FailedDevice {
+    pub device_name: String,
+    pub error: String,
+}
+
+/// Sync all local devices to ThingsBoard entity group
+pub async fn sync_devices_to_thingsboard(
+    State(state): State<AppState>,
+    Json(request): Json<SyncDevicesRequest>,
+) -> Result<Json<ApiResponse<SyncDevicesResponse>>, StatusCode> {
+    use crate::tb_rust_client::{ThingsBoardClient, to_thingsboard_device, to_thingsboard_device_with_type};
+    
+    info!("Starting sync of local devices to ThingsBoard entity group: {}", request.entity_group_id);
+    
+    // Get only unsynced devices from local database (those without tb_device_id)
+    let devices = match state.database.get_unsynced_devices().await {
+        Ok(devices) => devices,
+        Err(e) => {
+            error!("Failed to get unsynced devices from database: {}", e);
+            return Ok(Json(ApiResponse::error(format!("Failed to get unsynced devices from database: {}", e))));
+        }
+    };
+    
+    if devices.is_empty() {
+        warn!("No unsynced devices found in local database");
+        return Ok(Json(ApiResponse::success(SyncDevicesResponse {
+            total_devices: 0,
+            created_count: 0,
+            failed_count: 0,
+            failed_devices: vec![],
+            updated_device_ids: vec![],
+            update_failed_count: 0,
+        })));
+    }
+    
+    info!("Found {} unsynced devices in local database", devices.len());
+    
+    // Connect to ThingsBoard
+    let base_url = "https://monitoring.avaasia.co".to_string();
+    let mut tb_client = ThingsBoardClient::new(&base_url);
+    
+    match tb_client.login("jaydenyong28@gmail.com", "lalala88").await {
+        Ok(()) => {
+            info!("Successfully authenticated with ThingsBoard");
+            
+            // Get entity group information to extract the name
+            let entity_groups = match tb_client.get_all_entity_groups("DEVICE").await {
+                Ok(groups) => groups,
+                Err(e) => {
+                    error!("Failed to get entity groups: {}", e);
+                    return Ok(Json(ApiResponse::error(format!("Failed to get entity groups: {}", e))));
+                }
+            };
+            
+            let entity_group_name = entity_groups
+                .iter()
+                .find(|group| group.id.id == request.entity_group_id)
+                .map(|group| group.name.clone())
+                .unwrap_or_else(|| "Unknown Group".to_string());
+            
+            info!("Target entity group: {} ({})", entity_group_name, request.entity_group_id);
+            
+            // Get existing devices in the ThingsBoard group to determine current device indices
+            let existing_devices = match tb_client.get_all_group_devices(&request.entity_group_id, 50).await {
+                Ok(devices) => {
+                    info!("Found {} existing devices in ThingsBoard group", devices.len());
+                    devices
+                }
+                Err(e) => {
+                    warn!("Failed to get existing devices from ThingsBoard group: {}", e);
+                    Vec::new() // Continue with empty list if we can't fetch existing devices
+                }
+            };
+            
+            // Initialize device type counters based on existing devices
+            let mut device_type_counters: std::collections::HashMap<String, u32> = std::collections::HashMap::new();
+            
+            // Parse existing device names to find the highest index for each device type
+            for existing_device in &existing_devices {
+                // Extract device type and index from existing device name
+                // Expected format: "PREFIX-T##" where T is type abbreviation and ## is index
+                if let Some((device_type, index)) = parse_device_name_for_type_and_index(&existing_device.name, &entity_group_name) {
+                    let current_max = device_type_counters.entry(device_type.clone()).or_insert(0);
+                    if index > *current_max {
+                        *current_max = index;
+                        info!("Updated max index for device type '{}' to {} based on existing device '{}'", 
+                              device_type, index, existing_device.name);
+                    }
+                }
+            }
+            
+            info!("Device type counters initialized: {:?}", device_type_counters);
+            
+            let mut created_count = 0;
+            let mut failed_count = 0;
+            let mut failed_devices = Vec::new();
+            let mut device_id_mappings = Vec::new(); // Store mappings for batch update
+            
+            // Process each device
+            for (index, device) in devices.iter().enumerate() {
+                info!("Processing device {} of {}: {}", index + 1, devices.len(), device.name);
+                
+                // Get the actual device type from database for proper indexing
+                let device_type = match state.database.get_device_ava_type(&device.id).await {
+                    Ok(Some(ava_type)) => ava_type,
+                    Ok(None) => {
+                        warn!("No AVA type found for device {}, defaulting to Inverter", device.id);
+                        "Inverter".to_string()
+                    }
+                    Err(e) => {
+                        warn!("Failed to get AVA type for device {}: {}, defaulting to Inverter", device.id, e);
+                        "Inverter".to_string()
+                    }
+                };
+                
+                // Increment counter for this device type
+                let device_index = device_type_counters.entry(device_type.clone()).or_insert(0);
+                *device_index += 1;
+                
+                // Convert local device to ThingsBoard format with proper device type lookup
+                let create_request = match to_thingsboard_device_with_type(device, &entity_group_name, *device_index, &state.database).await {
+                    Ok(request) => request,
+                    Err(e) => {
+                        warn!("Failed to create ThingsBoard device request for {}: {}, using fallback", device.name, e);
+                        to_thingsboard_device(device, &entity_group_name, *device_index)
+                    }
+                };
+                
+                // Attempt to create device in ThingsBoard
+                match tb_client.create_device(&create_request, &request.entity_group_id, None).await {
+                    Ok(created_device) => {
+                        created_count += 1;
+                        let tb_device_id = created_device.id.as_ref().map(|id| &id.id).unwrap_or(&String::from("Unknown")).clone();
+                        
+                        info!("Successfully created device: {} [{}] (TB ID: {})", 
+                              create_request.name, create_request.device_type, tb_device_id);
+                        
+                        // Create hierarchical devices (MPPT and String devices) only for Inverters
+                        if tb_device_id != "Unknown" && create_request.device_type == "Inverter" {
+                            match tb_client.sync_device_hierarchy_to_thingsboard(
+                                device, 
+                                &request.entity_group_id,
+                                &entity_group_name,
+                                &state.database,
+                                *device_index  // Pass the correct inverter index
+                            ).await {
+                                Ok(hierarchy_devices) => {
+                                    info!("Successfully created {} hierarchical devices for inverter {}", 
+                                          hierarchy_devices.len(), create_request.name);
+                                }
+                                Err(e) => {
+                                    warn!("Failed to create hierarchical devices for inverter {}: {}", 
+                                          create_request.name, e);
+                                    // Continue with the main process - don't fail the entire sync
+                                }
+                            }
+                        } else if tb_device_id != "Unknown" {
+                            info!("Device {} is not an Inverter (type: {}), skipping hierarchical device creation", 
+                                  create_request.name, create_request.device_type);
+                        }
+                        
+                        // Store mapping for later batch update
+                        if tb_device_id != "Unknown" {
+                            device_id_mappings.push((device.id.clone(), tb_device_id, create_request.name.clone(), create_request.device_type.clone()));
+                        }
+                    }
+                    Err(e) => {
+                        failed_count += 1;
+                        let error_msg = e.to_string();
+                        error!("Failed to create device {}: {}", create_request.name, error_msg);
+                        failed_devices.push(FailedDevice {
+                            device_name: create_request.name.clone(),
+                            error: error_msg,
+                        });
+                    }
+                }
+                
+                // Add a small delay to avoid rate limiting
+                tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+            }
+            
+            // Step 2: Update local database with ThingsBoard device IDs
+            let mut updated_device_ids = Vec::new();
+            let mut update_failed_count = 0;
+            
+            if !device_id_mappings.is_empty() {
+                info!("Updating {} local devices with ThingsBoard device IDs and group ID...", device_id_mappings.len());
+                
+                // Prepare mappings for batch update (local_id, thingsboard_id, group_id)
+                let id_mappings: Vec<(String, String, String)> = device_id_mappings
+                    .iter()
+                    .map(|(local_id, tb_id, _device_name, _device_type)| (local_id.clone(), tb_id.clone(), request.entity_group_id.clone()))
+                    .collect();
+                
+                // Perform batch update using the new method
+                match state.database.batch_update_devices_thingsboard_ids(&id_mappings).await {
+                    Ok(successful_updates) => {
+                        info!("Successfully updated {} devices with ThingsBoard IDs and group ID {}", successful_updates.len(), request.entity_group_id);
+                        
+                        // Create response data for successful updates
+                        for (local_id, tb_id, device_name, device_type) in device_id_mappings {
+                            if successful_updates.iter().any(|update| update.contains(&format!("{} -> {} (group: {})", local_id, tb_id, request.entity_group_id))) {
+                                updated_device_ids.push(DeviceIdUpdate {
+                                    local_id,
+                                    thingsboard_id: tb_id,
+                                    device_name,
+                                    device_type,
+                                });
+                            } else {
+                                update_failed_count += 1;
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        error!("Failed to update devices with ThingsBoard IDs and group ID in local database: {}", e);
+                        update_failed_count = device_id_mappings.len();
+                        // Note: Devices were still created in ThingsBoard, just local records weren't updated
+                    }
+                }
+            }
+            
+            let response = SyncDevicesResponse {
+                total_devices: devices.len(),
+                created_count,
+                failed_count,
+                failed_devices,
+                updated_device_ids,
+                update_failed_count,
+            };
+            
+            info!("Sync completed. Total: {}, Created: {}, Failed: {}, ID Updates: {}, Update Failures: {}", 
+                  response.total_devices, response.created_count, response.failed_count,
+                  response.updated_device_ids.len(), response.update_failed_count);
+            
+            Ok(Json(ApiResponse::success(response)))
+        }
+        Err(e) => {
+            error!("Failed to login to ThingsBoard: {}", e);
+            Ok(Json(ApiResponse::error(format!("Failed to login to ThingsBoard: {}", e))))
+        }
+    }
+}
+
+// Generate device catalog request and response structures
+#[derive(Deserialize)]
+pub struct GenerateDeviceCatalogRequest {
+    pub entity_group_id: String,
+    pub output_dir: String,
+}
+
+#[derive(Serialize)]
+pub struct GenerateDeviceCatalogResponse {
+    pub message: String,
+    pub file_path: String,
+}
+
+/// Generate a CSV device catalog for the specified entity group
+pub async fn generate_device_catalog(
+    State(state): State<AppState>,
+    Json(request): Json<GenerateDeviceCatalogRequest>,
+) -> Result<Json<ApiResponse<GenerateDeviceCatalogResponse>>, StatusCode> {
+    use crate::tb_rust_client::ThingsBoardClient;
+    
+    info!("Generating device catalog for entity group: {}", request.entity_group_id);
+    
+    // Connect to ThingsBoard
+    let base_url = "https://monitoring.avaasia.co".to_string();
+    let mut tb_client = ThingsBoardClient::new(&base_url);
+    
+    match tb_client.login("jaydenyong28@gmail.com", "lalala88").await {
+        Ok(()) => {
+            info!("Successfully authenticated with ThingsBoard for catalog generation");
+            
+            // Generate the device catalog CSV with database access
+            match tb_client.generate_detailed_device_catalog_csv(&request.entity_group_id, &request.output_dir, &state.database).await {
+                Ok(result) => {
+                    let response = GenerateDeviceCatalogResponse {
+                        message: result.clone(),
+                        file_path: format!("{}/[entity-group-name]-device-catalog.csv", request.output_dir),
+                    };
+                    
+                    info!("Device catalog generated successfully");
+                    Ok(Json(ApiResponse::success(response)))
+                }
+                Err(e) => {
+                    error!("Failed to generate device catalog: {}", e);
+                    Ok(Json(ApiResponse::error(format!("Failed to generate device catalog: {}", e))))
+                }
+            }
+        }
+        Err(e) => {
+            error!("Failed to login to ThingsBoard for catalog generation: {}", e);
+            Ok(Json(ApiResponse::error(format!("Failed to login to ThingsBoard: {}", e))))
+        }
+    }
+}
+
+// File Management API endpoints
+
+#[derive(Serialize)]
+pub struct FileInfo {
+    pub name: String,
+    pub size: u64,
+    pub modified: String,
+    pub download_url: String,
+}
+
+/// List all CSV files in the catalogs directory
+pub async fn list_catalog_files() -> Result<Json<ApiResponse<Vec<FileInfo>>>, StatusCode> {
+    use std::fs;
+    use chrono::{DateTime, Utc};
+    
+    let catalog_dir = "catalogs";
+    
+    match fs::read_dir(catalog_dir) {
+        Ok(entries) => {
+            let mut files = Vec::new();
+            
+            for entry in entries {
+                if let Ok(entry) = entry {
+                    let path = entry.path();
+                    if path.is_file() {
+                        if let Some(filename) = path.file_name().and_then(|n| n.to_str()) {
+                            // Only include CSV files
+                            if filename.ends_with(".csv") {
+                                if let Ok(metadata) = entry.metadata() {
+                                    let modified = metadata.modified()
+                                        .map(|time| {
+                                            let datetime: DateTime<Utc> = time.into();
+                                            datetime.format("%Y-%m-%d %H:%M:%S UTC").to_string()
+                                        })
+                                        .unwrap_or_else(|_| "Unknown".to_string());
+                                    
+                                    files.push(FileInfo {
+                                        name: filename.to_string(),
+                                        size: metadata.len(),
+                                        modified,
+                                        download_url: format!("/api/files/catalogs/{}", filename),
+                                    });
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            
+            // Sort by modification time (newest first)
+            files.sort_by(|a, b| b.modified.cmp(&a.modified));
+            
+            Ok(Json(ApiResponse::success(files)))
+        }
+        Err(e) => {
+            error!("Failed to read catalog directory: {}", e);
+            Ok(Json(ApiResponse::error(format!("Failed to read catalog directory: {}", e))))
+        }
+    }
+}
+
+/// Download a specific CSV file
+pub async fn download_catalog_file(Path(filename): Path<String>) -> Result<impl axum::response::IntoResponse, StatusCode> {
+    use axum::response::Response;
+    use axum::body::Body;
+    use axum::http::{header, HeaderMap};
+    use std::fs;
+    use std::path::Path as StdPath;
+    
+    // Security: Only allow CSV files and prevent directory traversal
+    if !filename.ends_with(".csv") || filename.contains("..") || filename.contains("/") || filename.contains("\\") {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    
+    let file_path = StdPath::new("catalogs").join(&filename);
+    
+    match fs::read(&file_path) {
+        Ok(contents) => {
+            let mut headers = HeaderMap::new();
+            headers.insert(
+                header::CONTENT_TYPE,
+                "text/csv; charset=utf-8".parse().unwrap(),
+            );
+            headers.insert(
+                header::CONTENT_DISPOSITION,
+                format!("attachment; filename=\"{}\"", filename).parse().unwrap(),
+            );
+            
+            Ok(Response::builder()
+                .status(200)
+                .header(header::CONTENT_TYPE, "text/csv; charset=utf-8")
+                .header(header::CONTENT_DISPOSITION, format!("attachment; filename=\"{}\"", filename))
+                .body(Body::from(contents))
+                .unwrap())
+        }
+        Err(_) => Err(StatusCode::NOT_FOUND),
+    }
+}
+
+/// Delete a specific CSV file
+pub async fn delete_catalog_file(Path(filename): Path<String>) -> Result<Json<ApiResponse<String>>, StatusCode> {
+    use std::fs;
+    use std::path::Path as StdPath;
+    
+    // Security: Only allow CSV files and prevent directory traversal
+    if !filename.ends_with(".csv") || filename.contains("..") || filename.contains("/") || filename.contains("\\") {
+        return Ok(Json(ApiResponse::error("Invalid filename or file type".to_string())));
+    }
+    
+    let file_path = StdPath::new("catalogs").join(&filename);
+    
+    match fs::remove_file(&file_path) {
+        Ok(_) => {
+            info!("Deleted catalog file: {}", filename);
+            Ok(Json(ApiResponse::success(format!("File '{}' deleted successfully", filename))))
+        }
+        Err(e) => {
+            error!("Failed to delete catalog file {}: {}", filename, e);
+            Ok(Json(ApiResponse::error(format!("Failed to delete file: {}", e))))
         }
     }
 }

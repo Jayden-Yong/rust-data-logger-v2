@@ -1,0 +1,30 @@
+[server]
+host = "0.0.0.0"  # Important: bind to all interfaces in container
+port = 8080
+
+[database]
+path = "/app/data/data.db"
+max_log_entries = 100000
+cleanup_interval_hours = 24
+
+[logging]
+level = "info"
+file_path = "/app/logs/ava-device-logger.log"
+max_file_size_mb = 10
+max_files = 5
+
+# Example devices (disabled by default)
+[[devices]]
+id = "example-device"
+name = "Example Modbus TCP Device"
+enabled = false
+polling_interval_ms = 5000
+timeout_ms = 10000
+retry_count = 3
+tags = []
+
+[devices.protocol]
+type = "modbus_tcp"
+host = "192.168.1.100"
+port = 502
+slave_id = 1

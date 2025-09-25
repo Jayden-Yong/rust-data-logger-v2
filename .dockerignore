@@ -1,0 +1,33 @@
+# Build artifacts
+target/
+node_modules/
+
+# Development files
+data.db*
+*.log
+.env*
+
+# Git and docs
+.git/
+.gitignore
+README.md
+.github/
+
+# Docker files
+Dockerfile*
+docker-compose*.yml
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Temporary files
+temp_response.json
+correct_response.json
+*.tmp

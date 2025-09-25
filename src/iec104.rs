@@ -15,21 +15,21 @@ const APDU_MIN_LEN: u8 = 4;
 
 // APCI types
 const I_FORMAT: u8 = 0x00;
-const S_FORMAT: u8 = 0x01;
+// const S_FORMAT: u8 = 0x01;
 const U_FORMAT: u8 = 0x03;
 
 // U-format commands
 const STARTDT_ACT: u8 = 0x07;
 const STARTDT_CON: u8 = 0x0B;
 const STOPDT_ACT: u8 = 0x13;
-const STOPDT_CON: u8 = 0x23;
-const TESTFR_ACT: u8 = 0x43;
-const TESTFR_CON: u8 = 0x83;
+// const STOPDT_CON: u8 = 0x23;
+// const TESTFR_ACT: u8 = 0x43;
+// const TESTFR_CON: u8 = 0x83;
 
 // ASDU Types
 const M_SP_NA_1: u8 = 1;  // Single-point information
-const M_DP_NA_1: u8 = 3;  // Double-point information
-const M_ME_NA_1: u8 = 9;  // Measured value, normalized value
+// const M_DP_NA_1: u8 = 3;  // Double-point information
+// const M_ME_NA_1: u8 = 9;  // Measured value, normalized value
 const M_ME_NB_1: u8 = 11; // Measured value, scaled value
 const M_ME_NC_1: u8 = 13; // Measured value, short floating point value
 
@@ -82,43 +82,43 @@ impl Iec104Client {
         }
     }
 
-    pub async fn read_tags(&mut self, database: &Database) -> Result<Vec<LogEntry>> {
-        let mut log_entries = Vec::new();
-        let timestamp = Utc::now();
+    // pub async fn read_tags(&mut self, database: &Database) -> Result<Vec<LogEntry>> {
+    //     let mut log_entries = Vec::new();
+    //     let timestamp = Utc::now();
 
-        // Send interrogation command to get all current values
-        self.send_interrogation().await?;
+    //     // Send interrogation command to get all current values
+    //     self.send_interrogation().await?;
 
-        // Read multiple frames to get all data
-        for _ in 0..10 { // Limit to prevent infinite loop
-            match tokio::time::timeout(
-                tokio::time::Duration::from_millis(1000),
-                self.receive_frame()
-            ).await {
-                Ok(Ok(frame)) => {
-                    if let Some(entries) = self.parse_data_frame(&frame, timestamp) {
-                        for entry in entries {
-                            // Insert into database
-                            if let Err(e) = database.insert_log_entry(&entry).await {
-                                error!("Failed to insert log entry: {}", e);
-                            }
-                            log_entries.push(entry);
-                        }
-                    }
-                },
-                Ok(Err(e)) => {
-                    error!("Error receiving frame: {}", e);
-                    break;
-                },
-                Err(_) => {
-                    // Timeout - no more data
-                    break;
-                }
-            }
-        }
+    //     // Read multiple frames to get all data
+    //     for _ in 0..10 { // Limit to prevent infinite loop
+    //         match tokio::time::timeout(
+    //             tokio::time::Duration::from_millis(1000),
+    //             self.receive_frame()
+    //         ).await {
+    //             Ok(Ok(frame)) => {
+    //                 if let Some(entries) = self.parse_data_frame(&frame, timestamp) {
+    //                     for entry in entries {
+    //                         // Insert into database
+    //                         if let Err(e) = database.insert_log_entry(&entry).await {
+    //                             error!("Failed to insert log entry: {}", e);
+    //                         }
+    //                         log_entries.push(entry);
+    //                     }
+    //                 }
+    //             },
+    //             Ok(Err(e)) => {
+    //                 error!("Error receiving frame: {}", e);
+    //                 break;
+    //             },
+    //             Err(_) => {
+    //                 // Timeout - no more data
+    //                 break;
+    //             }
+    //         }
+    //     }
 
-        Ok(log_entries)
-    }
+    //     Ok(log_entries)
+    // }
 
     async fn send_u_format(&mut self, control: u8) -> Result<()> {
         let stream = self.stream.as_mut()

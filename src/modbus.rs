@@ -55,53 +55,53 @@ impl ModbusClient {
         }
     }
 
-    pub async fn read_tags(&mut self, database: &Database) -> Result<Vec<LogEntry>> {
-        let mut log_entries = Vec::new();
-        let timestamp = Utc::now();
+    // pub async fn read_tags(&mut self, database: &Database) -> Result<Vec<LogEntry>> {
+    //     let mut log_entries = Vec::new();
+    //     let timestamp = Utc::now();
 
-        // Clone the tags to avoid borrowing issues
-        let tags = self.device_config.tags.clone();
+    //     // Clone the tags to avoid borrowing issues
+    //     let tags = self.device_config.tags.clone();
         
-        for tag in &tags {
-            match self.read_tag(&tag).await {
-                Ok(value) => {
-                    let scaled_value = self.apply_scaling(value, &tag);
-                    let entry = LogEntry {
-                        id: None,
-                        device_id: self.device_config.id.clone(),
-                        tag_name: tag.name.clone(),
-                        value: scaled_value,
-                        quality: "Good".to_string(),
-                        timestamp,
-                        unit: tag.scaling.as_ref().and_then(|s| s.unit.clone()),
-                    };
+    //     for tag in &tags {
+    //         match self.read_tag(&tag).await {
+    //             Ok(value) => {
+    //                 let scaled_value = self.apply_scaling(value, &tag);
+    //                 let entry = LogEntry {
+    //                     id: None,
+    //                     device_id: self.device_config.id.clone(),
+    //                     tag_name: tag.name.clone(),
+    //                     value: scaled_value,
+    //                     quality: "Good".to_string(),
+    //                     timestamp,
+    //                     unit: tag.scaling.as_ref().and_then(|s| s.unit.clone()),
+    //                 };
 
-                    // Insert into database
-                    if let Err(e) = database.insert_log_entry(&entry).await {
-                        error!("Failed to insert log entry: {}", e);
-                    }
+    //                 // Insert into database
+    //                 if let Err(e) = database.insert_log_entry(&entry).await {
+    //                     error!("Failed to insert log entry: {}", e);
+    //                 }
 
-                    log_entries.push(entry);
-                },
-                Err(e) => {
-                    warn!("Failed to read tag {}: {}", tag.name, e);
-                    let entry = LogEntry {
-                        id: None,
-                        device_id: self.device_config.id.clone(),
-                        tag_name: tag.name.clone(),
-                        value: 0.0,
-                        quality: "Bad".to_string(),
-                        timestamp,
-                        unit: tag.scaling.as_ref().and_then(|s| s.unit.clone()),
-                    };
+    //                 log_entries.push(entry);
+    //             },
+    //             Err(e) => {
+    //                 warn!("Failed to read tag {}: {}", tag.name, e);
+    //                 let entry = LogEntry {
+    //                     id: None,
+    //                     device_id: self.device_config.id.clone(),
+    //                     tag_name: tag.name.clone(),
+    //                     value: 0.0,
+    //                     quality: "Bad".to_string(),
+    //                     timestamp,
+    //                     unit: tag.scaling.as_ref().and_then(|s| s.unit.clone()),
+    //                 };
 
-                    log_entries.push(entry);
-                }
-            }
-        }
+    //                 log_entries.push(entry);
+    //             }
+    //         }
+    //     }
 
-        Ok(log_entries)
-    }
+    //     Ok(log_entries)
+    // }
 
     async fn read_tag(&mut self, tag: &TagConfig) -> Result<f64> {
         let client = if let Some(ref mut client) = self.tcp_client {
