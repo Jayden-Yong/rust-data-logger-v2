@@ -18,6 +18,7 @@ import {
   Tooltip,
   Typography,
   Popconfirm,
+  Alert,
 } from 'antd';
 import {
   PlusOutlined,
@@ -37,14 +38,19 @@ import {
   FolderOpenOutlined,
   ExportOutlined,
   ReloadOutlined,
+  ClockCircleOutlined,
 } from '@ant-design/icons';
 import axios from 'axios';
+import { useNavigate } from 'react-router-dom';
 import DeviceModelBrowser from './DeviceModelBrowser';
+import { useAuth } from '../contexts/AuthContext';
 
 const { Option } = Select;
-const { Text } = Typography;
+const { Text, Title } = Typography;
 
 const EnhancedDeviceConfig = () => {
+  const { isAdmin, loading: authLoading } = useAuth();
+  const navigate = useNavigate();
   const [devices, setDevices] = useState([]);
   const [unsyncedDevices, setUnsyncedDevices] = useState([]);
   const [syncedDevices, setSyncedDevices] = useState([]);
@@ -67,6 +73,7 @@ const EnhancedDeviceConfig = () => {
   // Sync to ThingsBoard state
   const [syncLoading, setSyncLoading] = useState(false);
   const [syncResults, setSyncResults] = useState(null);
+  const [plantSyncInfo, setPlantSyncInfo] = useState([]);
 
   // Generate catalog state
   const [catalogLoading, setCatalogLoading] = useState(false);
@@ -76,6 +83,12 @@ const EnhancedDeviceConfig = () => {
   const [filesLoading, setFilesLoading] = useState(false);
   const [filesModalVisible, setFilesModalVisible] = useState(false);
 
+  // Plant configuration state
+  const [plantConfig, setPlantConfig] = useState(null);
+  const [plantConfigError, setPlantConfigError] = useState(null);
+  const [isPlantConfigured, setIsPlantConfigured] = useState(false);
+  const [plantConfigLoading, setPlantConfigLoading] = useState(true);
+
   // Fetch device models on component mount
   useEffect(() => {
     fetchDeviceModels();
@@ -83,11 +96,24 @@ const EnhancedDeviceConfig = () => {
     fetchDevices();
     fetchUnsyncedDevices();
     fetchDeviceGroups();
+    if (isAdmin) {
+      fetchPlantSyncInfo();
+    }
   }, []);
+
+  // Fetch plant config when auth loading is complete
+  useEffect(() => {
+    if (!authLoading) {
+      fetchPlantConfig();
+    }
+  }, [authLoading, isAdmin]);
 
   // Fetch synced devices when group selection changes
   useEffect(() => {
     fetchSyncedDevicesForGroup(selectedDeviceGroup);
+    if (isAdmin && selectedDeviceGroup) {
+      fetchPlantSyncInfo();
+    }
   }, [selectedDeviceGroup]);
 
   const fetchDeviceGroups = async () => {
@@ -152,15 +178,89 @@ const EnhancedDeviceConfig = () => {
   const fetchDevices = async () => {
     try {
       setLoading(true);
-      const response = await axios.get('/api/devices-enhanced');
+      setPlantConfigError(null);
+      // Use filtered endpoint for installers, full endpoint for admins
+      const endpoint = isAdmin ? '/api/devices-enhanced' : '/api/devices-filtered';
+      const response = await axios.get(endpoint);
       if (response.data.success) {
         console.log('EnhancedDeviceConfig: Loaded devices:', response.data.data);
         setDevices(response.data.data);
+        setIsPlantConfigured(true);
+      } else {
+        // Handle plant configuration errors for installers
+        if (!isAdmin && response.data.error) {
+          setPlantConfigError(response.data.error);
+          setIsPlantConfigured(false);
+          setDevices([]);
+        } else {
+          message.error(response.data.error || 'Failed to fetch devices');
+        }
       }
     } catch (error) {
-      message.error('Failed to fetch devices');
+      if (!isAdmin) {
+        setPlantConfigError('Failed to connect to server. Please try again.');
+        setIsPlantConfigured(false);
+      } else {
+        message.error('Failed to fetch devices');
+      }
     } finally {
       setLoading(false);
+    }
+  };
+
+  const fetchPlantConfig = async () => {
+    try {
+      setPlantConfigLoading(true);
+      setPlantConfigError(null); // Clear any previous errors
+      
+      console.log('fetchPlantConfig: Starting fetch, isAdmin:', isAdmin);
+      
+      const response = await axios.get('/api/plant-config');
+      if (response.data.success) {
+        const config = response.data.data;
+        setPlantConfig(config);
+        
+        console.log('fetchPlantConfig: Got config:', config);
+        
+        // Check if plant is properly configured for both admin and installer
+        const isConfigured = config.plant_name !== "Default Plant" && 
+                           config.thingsboard_entity_group_id && 
+                           config.thingsboard_entity_group_id.trim() !== "";
+        setIsPlantConfigured(isConfigured);
+        
+        console.log('fetchPlantConfig: isConfigured:', isConfigured, 'plant_name:', config.plant_name, 'entity_group_id:', config.thingsboard_entity_group_id);
+        
+        if (!isConfigured) {
+          if (isAdmin) {
+            setPlantConfigError("Plant configuration is incomplete. Please configure the plant name and ThingsBoard entity group.");
+          } else {
+            setPlantConfigError("Plant has not been configured yet. Please contact your administrator to configure the plant settings.");
+          }
+          console.log('fetchPlantConfig: Setting error for isAdmin:', isAdmin);
+        }
+      } else {
+        // Handle API error response
+        console.log('fetchPlantConfig: API error response:', response.data.error);
+        setIsPlantConfigured(false);
+        if (isAdmin) {
+          setPlantConfigError('Failed to load plant configuration. Please check your settings.');
+        } else {
+          setPlantConfigError('Failed to load plant configuration. Please contact your administrator.');
+        }
+      }
+    } catch (error) {
+      // Plant config error handling for both admin and installer
+      console.log('fetchPlantConfig: Exception caught:', error);
+      setIsPlantConfigured(false);
+      if (isAdmin) {
+        setPlantConfigError('Plant configuration not available. Please set up plant configuration.');
+      } else {
+        setPlantConfigError('Plant configuration not available. Please contact your administrator.');
+      }
+      console.log('Plant configuration not available:', error);
+    } finally {
+      setPlantConfigLoading(false);
+      console.log('fetchPlantConfig: Finished, loading set to false');
     }
   };
 
@@ -289,10 +389,22 @@ const EnhancedDeviceConfig = () => {
         read_only: template.read_only,
         enabled: true,
         schedule_group_id: defaultScheduleGroup?.id || null,
+        agg_to_field: template.agg_to_field || null,
       }));
       setDeviceTags(newTags);
     }
   }, [tagTemplates, scheduleGroups]);
+
+  const fetchPlantSyncInfo = async () => {
+    try {
+      const response = await axios.get('/api/plant-sync-info');
+      if (response.data.success) {
+        setPlantSyncInfo(response.data.data);
+      }
+    } catch (error) {
+      console.error('Failed to fetch plant sync info:', error);
+    }
+  };
 
   const syncDevicesToThingsBoard = async () => {
     if (!selectedDeviceGroup) {
@@ -415,6 +527,9 @@ const EnhancedDeviceConfig = () => {
         await fetchDevices();
         await fetchUnsyncedDevices();
         await fetchSyncedDevicesForGroup(selectedDeviceGroup);
+        
+        // Fetch updated plant sync info
+        await fetchPlantSyncInfo();
       } else {
         message.error(`Sync failed: ${response.data.error || 'Unknown error'}`);
         
@@ -717,6 +832,7 @@ const EnhancedDeviceConfig = () => {
     form.setFieldsValue({
       id: device.device.id,
       name: device.device.name,
+      serial_no: device.device.serial_no || '',
       model_id: device.device.model_id,
       enabled: device.device.enabled,
       polling_interval_ms: device.device.polling_interval_ms,
@@ -784,6 +900,7 @@ const EnhancedDeviceConfig = () => {
       const deviceData = {
         id: deviceId,
         name: values.name,
+        serial_no: values.serial_no || null,
         model_id: values.model_id || null,
         enabled: values.enabled || false,
         polling_interval_ms: values.polling_interval_ms || 1000,
@@ -833,6 +950,7 @@ const EnhancedDeviceConfig = () => {
       read_only: false,
       enabled: true,
       schedule_group_id: defaultScheduleGroup?.id || null,
+      agg_to_field: null,
     };
     setDeviceTags([...deviceTags, newTag]);
   };
@@ -892,6 +1010,30 @@ const EnhancedDeviceConfig = () => {
     }
   };
 
+  const formatDateTime = (dateTimeString) => {
+    if (!dateTimeString) return { date: 'N/A', time: '' };
+    
+    try {
+      const date = new Date(dateTimeString);
+      
+      // Format as DD-MM-YYYY HH:MM:SS
+      const day = String(date.getDate()).padStart(2, '0');
+      const month = String(date.getMonth() + 1).padStart(2, '0');
+      const year = date.getFullYear();
+      const hours = String(date.getHours()).padStart(2, '0');
+      const minutes = String(date.getMinutes()).padStart(2, '0');
+      const seconds = String(date.getSeconds()).padStart(2, '0');
+      
+      return {
+        date: `${day}-${month}-${year}`,
+        time: `${hours}:${minutes}:${seconds}`
+      };
+    } catch (e) {
+      console.error('Error formatting date:', e);
+      return { date: 'Invalid Date', time: '' };
+    }
+  };
+
   const getScheduleGroupColor = (intervalMs) => {
     if (intervalMs <= 100) return 'red';
     if (intervalMs <= 1000) return 'orange';
@@ -904,11 +1046,26 @@ const EnhancedDeviceConfig = () => {
       title: 'Device Name',
       dataIndex: ['device', 'name'],
       key: 'name',
+      width: 150,
+    },
+    {
+      title: 'Serial No.',
+      dataIndex: ['device', 'serial_no'],
+      key: 'serial_no',
+      width: 120,
+      render: (serialNo) => serialNo ? (
+        <Text code style={{ fontSize: '12px' }}>
+          {serialNo}
+        </Text>
+      ) : (
+        <Text type="secondary" style={{ fontSize: '14px' }}>-</Text>
+      ),
     },
     {
       title: 'Model',
       dataIndex: ['device', 'model_id'],
       key: 'model_id',
+      width: 130,
       render: (modelId) => {
         console.log('EnhancedDeviceConfig: Rendering model for ID:', modelId, 'Available models:', deviceModels.length);
         if (!modelId) return <Tag color="default">Custom</Tag>;
@@ -925,6 +1082,7 @@ const EnhancedDeviceConfig = () => {
       title: 'Protocol',
       dataIndex: ['device', 'protocol_config'],
       key: 'protocol',
+      width: 110,
       render: (config) => {
         console.log('EnhancedDeviceConfig: Rendering protocol for config:', config);
         try {
@@ -941,13 +1099,14 @@ const EnhancedDeviceConfig = () => {
       title: 'Host IP',
       dataIndex: ['device', 'protocol_config'],
       key: 'host_ip',
+      width: 160,
       render: (config) => {
         try {
           const protocolConfig = JSON.parse(config);
           if (protocolConfig.host) {
-            return <Text code>{protocolConfig.host}</Text>;
+            return <Text code style={{ fontSize: '14px' }}>{protocolConfig.host}</Text>;
           } else if (protocolConfig.type === 'iec104' && protocolConfig.target_host) {
-            return <Text code>{protocolConfig.target_host}</Text>;
+            return <Text code style={{ fontSize: '14px' }}>{protocolConfig.target_host}</Text>;
           }
           return <Text type="secondary">N/A</Text>;
         } catch (e) {
@@ -956,16 +1115,17 @@ const EnhancedDeviceConfig = () => {
       },
     },
     {
-      title: 'Device ID',
+      title: 'ID',
       dataIndex: ['device', 'protocol_config'],
       key: 'device_id',
+      width: 70,
       render: (config) => {
         try {
           const protocolConfig = JSON.parse(config);
           if (protocolConfig.type === 'modbus_tcp' || protocolConfig.type === 'modbus_rtu') {
-            return <Text code>{protocolConfig.slave_id || 'N/A'}</Text>;
+            return <Text code style={{ fontSize: '14px' }}>{protocolConfig.slave_id || 'N/A'}</Text>;
           } else if (protocolConfig.type === 'iec104') {
-            return <Text code>{protocolConfig.common_address || 'N/A'}</Text>;
+            return <Text code style={{ fontSize: '14px' }}>{protocolConfig.common_address || 'N/A'}</Text>;
           }
           return <Text type="secondary">N/A</Text>;
         } catch (e) {
@@ -977,13 +1137,14 @@ const EnhancedDeviceConfig = () => {
       title: 'Port',
       dataIndex: ['device', 'protocol_config'],
       key: 'port',
+      width: 80,
       render: (config) => {
         try {
           const protocolConfig = JSON.parse(config);
           if (protocolConfig.port) {
-            return <Text code>{protocolConfig.port}</Text>;
+            return <Text code style={{ fontSize: '14px' }}>{protocolConfig.port}</Text>;
           } else if (protocolConfig.type === 'iec104' && protocolConfig.target_port) {
-            return <Text code>{protocolConfig.target_port}</Text>;
+            return <Text code style={{ fontSize: '14px' }}>{protocolConfig.target_port}</Text>;
           }
           return <Text type="secondary">N/A</Text>;
         } catch (e) {
@@ -995,6 +1156,7 @@ const EnhancedDeviceConfig = () => {
       title: 'Status',
       dataIndex: ['device', 'enabled'],
       key: 'enabled',
+      width: 100,
       render: (enabled) => (
         <Tag color={enabled ? 'green' : 'red'}>
           {enabled ? 'Enabled' : 'Disabled'}
@@ -1005,17 +1167,18 @@ const EnhancedDeviceConfig = () => {
       title: 'Tags',
       dataIndex: 'tags',
       key: 'tags',
+      width: 100,
       render: (tags) => {
         const scaledTags = tags?.filter(tag => 
           tag.scaling_multiplier !== 1.0 || tag.scaling_offset !== 0.0
         ).length || 0;
         
         return (
-          <Space>
-            <Text>{tags?.length || 0} tags</Text>
+          <Space direction="vertical" size={2} style={{ display: 'flex', alignItems: 'flex-start' }}>
+            <Text style={{ fontSize: '13px' }}>{tags?.length || 0} tags</Text>
             {scaledTags > 0 && (
               <Tooltip title={`${scaledTags} tag(s) have custom scaling`}>
-                <Tag size="small" color="orange">
+                <Tag size="small" color="orange" style={{ margin: 0, fontSize: '11px' }}>
                   {scaledTags} scaled
                 </Tag>
               </Tooltip>
@@ -1025,14 +1188,42 @@ const EnhancedDeviceConfig = () => {
       },
     },
     {
+      title: 'Last Updated',
+      dataIndex: ['device', 'updated_at'],
+      key: 'updated_at',
+      width: 130,
+      render: (updatedAt) => {
+        const formatted = formatDateTime(updatedAt);
+        return (
+          <Tooltip title="Last time device configuration was updated">
+            <Space direction="vertical" size={0} style={{ display: 'flex', alignItems: 'flex-start' }}>
+              <Space size="small">
+                <ClockCircleOutlined style={{ color: '#8c8c8c', fontSize: '11px' }} />
+                <Text type="secondary" style={{ fontSize: '11px' }}>
+                  {formatted.date}
+                </Text>
+              </Space>
+              {formatted.time && (
+                <Text type="secondary" style={{ fontSize: '10px', marginLeft: '16px' }}>
+                  {formatted.time}
+                </Text>
+              )}
+            </Space>
+          </Tooltip>
+        );
+      },
+    },
+    {
       title: 'Actions',
       key: 'actions',
+      width: 90,
       render: (_, record) => (
-        <Space>
+        <Space size="small">
           <Button
             type="text"
             icon={<EditOutlined />}
             onClick={() => showEditModal(record)}
+            size="small"
           />
           <Popconfirm
             title="Delete Device"
@@ -1045,6 +1236,7 @@ const EnhancedDeviceConfig = () => {
               type="text"
               danger
               icon={<DeleteOutlined />}
+              size="small"
             />
           </Popconfirm>
         </Space>
@@ -1204,6 +1396,34 @@ const EnhancedDeviceConfig = () => {
       ),
     },
     {
+      title: 'Agg To Field',
+      dataIndex: 'agg_to_field',
+      key: 'agg_to_field',
+      width: 150,
+      render: (value, record, index) => (
+        <Select
+          value={value || undefined}
+          onChange={(val) => updateTag(index, 'agg_to_field', val)}
+          style={{ width: '100%' }}
+          placeholder="Select field"
+          allowClear
+        >
+          <Option value="ia">ia</Option>
+          <Option value="ib">ib</Option>
+          <Option value="ic">ic</Option>
+          <Option value="frequency">frequency</Option>
+          <Option value="pf">pf</Option>
+          <Option value="ua">ua</Option>
+          <Option value="ub">ub</Option>
+          <Option value="uc">uc</Option>
+          <Option value="p_grid_out">p_grid_out</Option>
+          <Option value="p_inv_out">p_inv_out</Option>
+          <Option value="q_grid">q_grid</Option>
+          <Option value="total_yield">total_yield</Option>
+        </Select>
+      ),
+    },
+    {
       title: 'Enabled',
       dataIndex: 'enabled',
       key: 'enabled',
@@ -1232,218 +1452,361 @@ const EnhancedDeviceConfig = () => {
 
   return (
     <div>
-      <Row gutter={[16, 16]}>
-        <Col span={24}>
-          <Card
-            title={
-              <Space>
-                <DatabaseOutlined />
-                ThingsBoard Device Groups
-              </Space>
-            }
-            extra={
-              <Button 
-                icon={<SearchOutlined />} 
-                onClick={fetchDeviceGroups}
-                loading={deviceGroupsLoading}
-              >
-                Refresh Groups
-              </Button>
-            }
-          >
-            <div style={{ marginBottom: 16 }}>
-              <Text type="secondary">
-                Select a ThingsBoard device group to view associated devices and manage group settings.
-              </Text>
+      {/* Don't render anything while auth is loading */}
+      {authLoading ? null : (
+        <>
+          {/* Plant Configuration Status */}
+          {!plantConfigLoading && plantConfigError && !isPlantConfigured ? (
+            <div style={{ marginBottom: 24 }}>
+              <Alert
+                message={
+                  <Space>
+                    <SettingOutlined style={{ color: '#fa8c16', fontSize: '16px' }} />
+                    <Text strong style={{ fontSize: '16px' }}>Plant Configuration Required</Text>
+                  </Space>
+                }
+                description={
+                  <div style={{ marginTop: '12px' }}>
+                    <Space direction="vertical" size="small" style={{ width: '100%' }}>
+                      <Text>{plantConfigError}</Text>
+                      <div style={{ 
+                        padding: '12px 16px', 
+                        backgroundColor: '#fff7e6', 
+                        borderRadius: '6px', 
+                        border: '1px solid #ffe7ba',
+                        marginTop: '8px'
+                      }}>
+                        <Text strong style={{ color: '#d46b08' }}>Required Actions:</Text>
+                        <ul style={{ margin: '8px 0 0 0', paddingLeft: '20px', color: '#d46b08' }}>
+                          {isAdmin ? (
+                            <>
+                              <li>Go to Plant Config page</li>
+                              <li>Set up a meaningful plant name</li>
+                              <li>Select a ThingsBoard device group</li>
+                            </>
+                          ) : (
+                            <>
+                              <li>Contact your system administrator</li>
+                              <li>Request plant configuration setup in admin panel</li>
+                              <li>Ensure plant is assigned a ThingsBoard device group</li>
+                            </>
+                          )}
+                        </ul>
+                      </div>
+                    </Space>
+                  </div>
+                }
+                type="warning"
+                showIcon={false}
+                style={{ 
+                  marginBottom: 24,
+                  border: '1px solid #ffd591',
+                  borderRadius: '12px',
+                  boxShadow: '0 4px 12px rgba(250, 140, 22, 0.1)'
+                }}
+                action={
+                  isAdmin ? (
+                    <Button 
+                      type="primary" 
+                      icon={<SettingOutlined />}
+                      onClick={() => navigate('/plant-config')}
+                      style={{ 
+                        borderRadius: '8px',
+                        fontWeight: '500'
+                      }}
+                    >
+                      Configure Plant
+                    </Button>
+                  ) : null
+                }
+              />
             </div>
+          ) : null}
 
+          {/* Only show content if admin OR if installer with proper plant config, and not loading */}
+          {!plantConfigLoading && (isAdmin || (!isAdmin && isPlantConfigured && !plantConfigError)) ? (
+        <>
+          {/* Plant Header - only show when properly configured */}
+          {isPlantConfigured && !plantConfigError && plantConfig && (
+            <div style={{ 
+              marginBottom: 24, 
+              padding: '20px 24px', 
+              background: 'linear-gradient(135deg, #fafafa 0%, #f5f5f5 100%)', 
+              borderRadius: '12px',
+              border: '1px solid #e8e8e8',
+              boxShadow: '0 2px 8px rgba(0, 0, 0, 0.06)'
+            }}>
+              <Space align="center" style={{ width: '100%', justifyContent: 'space-between' }}>
+                <Space align="center">
+                  <div>
+                    <Title level={4} style={{ margin: 0, color: '#262626' }}>
+                      {plantConfig.plant_name}
+                    </Title>
+                  </div>
+                </Space>
+                <Tag color="green" style={{ 
+                  fontSize: '13px', 
+                  padding: '6px 12px', 
+                  borderRadius: '20px',
+                  fontWeight: '500'
+                }}>
+                  <CheckCircleOutlined style={{ marginRight: 4 }} />
+                  Plant Configured
+                </Tag>
+              </Space>
+            </div>
+          )}
+
+          {/* ThingsBoard Device Groups - ONLY show for admins */}
+          {isAdmin && (
             <Row gutter={[16, 16]}>
               <Col span={24}>
-                <Select
-                  placeholder="Select a device group"
-                  style={{ width: '100%' }}
-                  loading={deviceGroupsLoading}
-                  value={selectedDeviceGroup}
-                  onChange={setSelectedDeviceGroup}
-                  allowClear
-                  showSearch={false}  // DISABLE to prevent input errors
-                  // REMOVE filterOption to prevent input processing
-                  disabled={deviceGroupsLoading}  // ADD to prevent interaction during loading
-                  notFoundContent={deviceGroupsLoading ? "Loading..." : "No groups found"}
+                <Card
+                  title={
+                    <Space>
+                      <DatabaseOutlined />
+                      ThingsBoard Device Groups
+                    </Space>
+                  }
+                  extra={
+                    <Button 
+                      icon={<SearchOutlined />} 
+                      onClick={fetchDeviceGroups}
+                      loading={deviceGroupsLoading}
+                    >
+                      Refresh Groups
+                    </Button>
+                  }
                 >
-                  {deviceGroups.map(group => (
-                    <Option key={group.id.id} value={group.id.id}>
-                      <Space>
-                        <DatabaseOutlined style={{ color: '#1890ff', fontSize: '14px' }} />
-                        <Text>{group.name}</Text>
-                      </Space>
-                    </Option>
-                  ))}
-                </Select>
-              </Col>
-            </Row>
+                  <div style={{ marginBottom: 16 }}>
+                    <Text type="secondary">
+                      Select a ThingsBoard device group to view associated devices and manage group settings.
+                    </Text>
+                  </div>
 
-            {selectedDeviceGroup && (
-              <>
-                <Row gutter={[16, 16]} style={{ marginTop: 16 }}>
-                  <Col span={24}>
-                    <Space>
-                      <Text strong>Selected Group:</Text>
-                      <Tag color="green">
-                        {deviceGroups.find(g => g.id.id === selectedDeviceGroup)?.name || 'Unknown'}
-                      </Tag>
-                    </Space>
-                  </Col>
-                </Row>
-                
-                <Row gutter={[16, 16]} style={{ marginTop: 16 }}>
-                  <Col>
-                    <Space>
-                      <Button
-                        type="primary"
-                        icon={<CloudUploadOutlined />}
-                        loading={syncLoading}
-                        onClick={syncDevicesToThingsBoard}
-                      >
-                        {syncLoading ? 'Syncing...' : 'Sync to ThingsBoard'}
-                      </Button>
-                      
-                      <Button
-                        type="default"
-                        icon={<ExportOutlined />}
-                        loading={catalogLoading}
-                        onClick={generateDeviceCatalog}
-                      >
-                        {catalogLoading ? 'Generating Catalog...' : 'Generate Catalog'}
-                      </Button>
-                      
-                      <Button
-                        icon={<FileTextOutlined />}
-                        onClick={showFilesModal}
-                      >
-                        Browse Files
-                      </Button>
-                    </Space>
-                  </Col>
-                </Row>
-
-                {syncResults && (
-                  <Row gutter={[16, 16]} style={{ marginTop: 16 }}>
+                  <Row gutter={[16, 16]}>
                     <Col span={24}>
-                      <Card size="small" style={{ border: '1px solid #d9d9d9' }}>
-                        <Space direction="vertical" style={{ width: '100%' }}>
-                          <Text strong>Sync Results:</Text>
-                          <Space>
-                            <Tag color="green" style={{ fontSize: '14px', padding: '4px 12px', fontWeight: 'bold' }}>
-                              <CheckCircleOutlined /> Created: {syncResults.created_count}
-                            </Tag>
-                            <Tag color="red" style={{ fontSize: '14px', padding: '4px 12px', fontWeight: 'bold' }}>
-                              <CloseCircleOutlined /> Failed: {syncResults.failed_count}
-                            </Tag>
-                            <Tag color="blue" style={{ fontSize: '14px', padding: '4px 12px', fontWeight: 'bold' }}>
-                              <BarChartOutlined /> Total: {syncResults.total_devices}
-                            </Tag>
-                          </Space>
-                          {syncResults.failed_devices && syncResults.failed_devices.length > 0 && (
-                            <div>
-                              <Text strong style={{ color: '#ff4d4f' }}>Failed Devices:</Text>
-                              {syncResults.failed_devices.map((failure, index) => (
-                                <div key={index} style={{ marginLeft: 16, fontSize: '12px' }}>
-                                  • {failure.device_name}: {failure.error}
-                                </div>
-                              ))}
-                            </div>
-                          )}
-                        </Space>
-                      </Card>
+                      <Select
+                        placeholder="Select a device group"
+                        style={{ width: '100%' }}
+                        loading={deviceGroupsLoading}
+                        value={selectedDeviceGroup}
+                        onChange={setSelectedDeviceGroup}
+                        allowClear
+                        showSearch={false}
+                        disabled={deviceGroupsLoading}
+                        notFoundContent={deviceGroupsLoading ? "Loading..." : "No groups found"}
+                      >
+                        {deviceGroups.map(group => (
+                          <Option key={group.id.id} value={group.id.id}>
+                            <Space>
+                              <DatabaseOutlined style={{ color: '#1890ff', fontSize: '14px' }} />
+                              <Text>{group.name}</Text>
+                            </Space>
+                          </Option>
+                        ))}
+                      </Select>
                     </Col>
                   </Row>
+
+                  {selectedDeviceGroup && (
+                    <>
+                      <Row gutter={[16, 16]} style={{ marginTop: 16 }}>
+                        <Col span={24}>
+                          <Space direction="vertical" size="small" style={{ width: '100%' }}>
+                            <Space>
+                              <Text strong>Selected Group:</Text>
+                              <Tag color="green">
+                                {deviceGroups.find(g => g.id.id === selectedDeviceGroup)?.name || 'Unknown'}
+                              </Tag>
+                            </Space>
+                            {(() => {
+                              const plantInfo = plantSyncInfo.find(p => p.thingsboard_entity_group_id === selectedDeviceGroup);
+                              if (plantInfo && plantInfo.last_synced) {
+                                try {
+                                  const syncDate = new Date(plantInfo.last_synced);
+                                  const formatted = syncDate.toLocaleString('en-GB', {
+                                    day: '2-digit',
+                                    month: '2-digit',
+                                    year: 'numeric',
+                                    hour: '2-digit',
+                                    minute: '2-digit',
+                                    second: '2-digit'
+                                  });
+                                  return (
+                                    <Space size="small">
+                                      <ClockCircleOutlined style={{ color: '#52c41a' }} />
+                                      <Text type="secondary" style={{ fontSize: '12px' }}>
+                                        Last synced: {formatted}
+                                      </Text>
+                                    </Space>
+                                  );
+                                } catch (e) {
+                                  return null;
+                                }
+                              }
+                              return null;
+                            })()}
+                          </Space>
+                        </Col>
+                      </Row>
+                      
+                      <Row gutter={[16, 16]} style={{ marginTop: 16 }}>
+                        <Col>
+                          <Space>
+                            <Button
+                              type="primary"
+                              icon={<CloudUploadOutlined />}
+                              loading={syncLoading}
+                              onClick={syncDevicesToThingsBoard}
+                            >
+                              {syncLoading ? 'Syncing...' : 'Sync to ThingsBoard'}
+                            </Button>
+                            
+                            <Button
+                              type="default"
+                              icon={<ExportOutlined />}
+                              loading={catalogLoading}
+                              onClick={generateDeviceCatalog}
+                            >
+                              {catalogLoading ? 'Generating Catalog...' : 'Generate Catalog'}
+                            </Button>
+                            
+                            <Button
+                              icon={<FileTextOutlined />}
+                              onClick={showFilesModal}
+                            >
+                              Browse Files
+                            </Button>
+                          </Space>
+                        </Col>
+                      </Row>
+
+                      {syncResults && (
+                        <Row gutter={[16, 16]} style={{ marginTop: 16 }}>
+                          <Col span={24}>
+                            <Card size="small" style={{ border: '1px solid #d9d9d9' }}>
+                              <Space direction="vertical" style={{ width: '100%' }}>
+                                <Text strong>Sync Results:</Text>
+                                <Space>
+                                  <Tag color="green" style={{ fontSize: '14px', padding: '4px 12px', fontWeight: 'bold' }}>
+                                    <CheckCircleOutlined /> Created: {syncResults.created_count}
+                                  </Tag>
+                                  <Tag color="red" style={{ fontSize: '14px', padding: '4px 12px', fontWeight: 'bold' }}>
+                                    <CloseCircleOutlined /> Failed: {syncResults.failed_count}
+                                  </Tag>
+                                  <Tag color="blue" style={{ fontSize: '14px', padding: '4px 12px', fontWeight: 'bold' }}>
+                                    <BarChartOutlined /> Total: {syncResults.total_devices}
+                                  </Tag>
+                                </Space>
+                                {syncResults.failed_devices && syncResults.failed_devices.length > 0 && (
+                                  <div>
+                                    <Text strong style={{ color: '#ff4d4f' }}>Failed Devices:</Text>
+                                    {syncResults.failed_devices.map((failure, index) => (
+                                      <div key={index} style={{ marginLeft: 16, fontSize: '12px' }}>
+                                        • {failure.device_name}: {failure.error}
+                                      </div>
+                                    ))}
+                                  </div>
+                                )}
+                              </Space>
+                            </Card>
+                          </Col>
+                        </Row>
+                      )}
+                    </>
+                  )}
+                </Card>
+              </Col>
+            </Row>
+          )}
+
+          {/* Synced Devices - Show differently for admin vs installer */}
+          <Row gutter={[16, 16]} style={{ marginTop: 16 }}>
+            <Col span={24}>
+              <Card
+                title={
+                  <Space>
+                    <CheckCircleOutlined style={{ color: '#52c41a' }} />
+                    {isAdmin ? 'Synced Devices' : 'Plant Devices'}
+                    {isAdmin && selectedDeviceGroup && (
+                      <Tag color="green">
+                        {deviceGroups.find(g => g.id.id === selectedDeviceGroup)?.name || 'Group'}
+                      </Tag>
+                    )}
+                  </Space>
+                }
+              >
+                {isAdmin && !selectedDeviceGroup ? (
+                  <div style={{ textAlign: 'center', padding: '40px 0', color: '#8c8c8c' }}>
+                    <CloudUploadOutlined style={{ fontSize: '48px', marginBottom: '16px' }} />
+                    <div>No group selected</div>
+                    <div>Select a ThingsBoard device group above to view synced devices</div>
+                  </div>
+                ) : (isAdmin ? syncedDevices : devices).length === 0 ? (
+                  <div style={{ textAlign: 'center', padding: '40px 0', color: '#8c8c8c' }}>
+                    <DatabaseOutlined style={{ fontSize: '48px', marginBottom: '16px' }} />
+                    <div>{isAdmin ? 'No synced devices in this group' : 'No devices found in your plant'}</div>
+                    <div>{isAdmin ? 'Sync devices to this group using the sync button above' : 'Contact your administrator if devices should be available'}</div>
+                  </div>
+                ) : (
+                  <Table
+                    columns={deviceColumns}
+                    dataSource={isAdmin ? syncedDevices : devices}
+                    loading={loading}
+                    rowKey={(record) => record.device.id}
+                    pagination={false}
+                  />
                 )}
-              </>
-            )}
-          </Card>
-        </Col>
-      </Row>
+              </Card>
+            </Col>
+          </Row>
 
-      <Row gutter={[16, 16]} style={{ marginTop: 16 }}>
-        <Col span={24}>
-          <Card
-            title={
-              <Space>
-                <CheckCircleOutlined style={{ color: '#52c41a' }} />
-                Synced Devices
-                {selectedDeviceGroup && (
-                  <Tag color="green">
-                    {deviceGroups.find(g => g.id.id === selectedDeviceGroup)?.name || 'Group'}
-                  </Tag>
+          {/* Unsynced Devices */}
+          <Row gutter={[16, 16]} style={{ marginTop: 16 }}>
+            <Col span={24}>
+              <Card
+                title={
+                  <Space>
+                    <SettingOutlined />
+                    {isAdmin ? 'Unsynced Devices' : 'Local Devices'}
+                  </Space>
+                }
+                extra={
+                  <Button type="primary" icon={<PlusOutlined />} onClick={showAddModal}>
+                    Add Device
+                  </Button>
+                }
+              >
+                {unsyncedDevices.length === 0 ? (
+                  <div style={{ textAlign: 'center', padding: '40px 0', color: '#8c8c8c' }}>
+                    <DatabaseOutlined style={{ fontSize: '48px', marginBottom: '16px' }} />
+                    <div>{isAdmin ? 'No unsynced devices found' : 'No local devices found'}</div>
+                    <div>{isAdmin ? 'Create a new device or sync existing devices to ThingsBoard' : 'Create a new device for your plant'}</div>
+                  </div>
+                ) : (
+                  <Table
+                    columns={deviceColumns}
+                    dataSource={unsyncedDevices}
+                    loading={loading}
+                    rowKey={(record) => record.device.id}
+                    pagination={false}
+                  />
                 )}
-              </Space>
-            }
-          >
-            {!selectedDeviceGroup ? (
-              <div style={{ textAlign: 'center', padding: '40px 0', color: '#8c8c8c' }}>
-                <CloudUploadOutlined style={{ fontSize: '48px', marginBottom: '16px' }} />
-                <div>No group selected</div>
-                <div>Select a ThingsBoard device group above to view synced devices</div>
-              </div>
-            ) : syncedDevices.length === 0 ? (
-              <div style={{ textAlign: 'center', padding: '40px 0', color: '#8c8c8c' }}>
-                <DatabaseOutlined style={{ fontSize: '48px', marginBottom: '16px' }} />
-                <div>No synced devices in this group</div>
-                <div>Sync devices to this group using the sync button above</div>
-              </div>
-            ) : (
-              <Table
-                columns={deviceColumns}
-                dataSource={syncedDevices}
-                loading={loading}
-                rowKey={(record) => record.device.id}
-                pagination={false}
-              />
-            )}
-          </Card>
-        </Col>
-      </Row>
+              </Card>
+            </Col>
+          </Row>
+        </>
+      ) : null}
+      </>
+      )}
 
-      <Row gutter={[16, 16]} style={{ marginTop: 16 }}>
-        <Col span={24}>
-          <Card
-            title={
-              <Space>
-                <SettingOutlined />
-                Unsynced Devices
-              </Space>
-            }
-            extra={
-              <Button type="primary" icon={<PlusOutlined />} onClick={showAddModal}>
-                Add Device
-              </Button>
-            }
-          >
-            {unsyncedDevices.length === 0 ? (
-              <div style={{ textAlign: 'center', padding: '40px 0', color: '#8c8c8c' }}>
-                <DatabaseOutlined style={{ fontSize: '48px', marginBottom: '16px' }} />
-                <div>No unsynced devices found</div>
-                <div>Create a new device or sync existing devices to ThingsBoard</div>
-              </div>
-            ) : (
-              <Table
-                columns={deviceColumns}
-                dataSource={unsyncedDevices}
-                loading={loading}
-                rowKey={(record) => record.device.id}
-                pagination={false}
-              />
-            )}
-          </Card>
-        </Col>
-      </Row>
-
+      {/* Modal Components */}
       <Modal
         title={editingDevice ? 'Edit Device' : 'Add Device'}
         open={modalVisible}
         onCancel={() => setModalVisible(false)}
-        width={1200}
+        width={1400}
         footer={null}
       >
         <Form
@@ -1465,13 +1828,21 @@ const EnhancedDeviceConfig = () => {
           }}
         >
           <Row gutter={16}>
-            <Col span={24}>
+            <Col span={12}>
               <Form.Item
                 label="Device Name"
                 name="name"
                 rules={[{ required: true, message: 'Please enter device name' }]}
               >
                 <Input placeholder="My Device" />
+              </Form.Item>
+            </Col>
+            <Col span={12}>
+              <Form.Item
+                label="Serial Number"
+                name="serial_no"
+              >
+                <Input placeholder="Optional serial number" />
               </Form.Item>
             </Col>
           </Row>

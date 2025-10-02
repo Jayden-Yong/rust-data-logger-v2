@@ -1,14 +1,19 @@
 use axum::{
     extract::{Path, Query, State, Multipart},
-    http::StatusCode,
+    http::{StatusCode, HeaderMap},
     response::Json,
+    middleware::Next,
+    response::Response,
+    extract::Request,
 };
 use serde::{Deserialize, Serialize};
 use tracing::{info, error, warn};
+use chrono::{DateTime, Utc, Duration};
+use uuid::Uuid;
 
 use crate::{AppState};
 use crate::config::{AppConfig, DeviceConfig, save_config};
-use crate::database::{LogEntry, DeviceModel, TagTemplate, DeviceInstance, DeviceTag, ScheduleGroup, ModbusTcpTagRegister};
+use crate::database::{LogEntry, DeviceModel, TagTemplate, DeviceInstance, DeviceTag, ScheduleGroup, ModbusTcpTagRegister, PlantConfiguration};
 use crate::csv_parser::ModbusTcpCsvParserService;
 
 use serde_json::{json, Value};
@@ -34,6 +39,33 @@ pub struct ApiResponse<T> {
 pub struct LogQuery {
     pub limit: Option<u32>,
     pub offset: Option<u32>,
+}
+
+// Authentication structures
+#[derive(Deserialize)]
+pub struct LoginRequest {
+    pub username: String,
+    pub password: String,
+}
+
+#[derive(Serialize)]
+pub struct LoginResponse {
+    pub session_token: String,
+    pub user: UserInfo,
+    pub expires_at: DateTime<Utc>,
+}
+
+#[derive(Serialize)]
+pub struct UserInfo {
+    pub id: i64,
+    pub username: String,
+    pub role: String,
+}
+
+#[derive(Deserialize)]
+pub struct PlantConfigRequest {
+    pub plant_name: String,
+    pub thingsboard_entity_group_id: Option<String>,
 }
 
 impl<T> ApiResponse<T> {
@@ -514,6 +546,7 @@ pub async fn get_tag_templates(
 pub struct CreateDeviceRequest {
     pub id: String,
     pub name: String,
+    pub serial_no: Option<String>,
     pub model_id: Option<String>,
     pub enabled: bool,
     pub polling_interval_ms: u32,
@@ -536,6 +569,7 @@ pub struct CreateTagRequest {
     pub read_only: bool,
     pub enabled: bool,
     pub schedule_group_id: Option<String>,
+    pub agg_to_field: Option<String>,
 }
 
 pub async fn create_device_with_tags(
@@ -548,6 +582,7 @@ pub async fn create_device_with_tags(
     let device = DeviceInstance {
         id: request.id.clone(),
         name: request.name,
+        serial_no: request.serial_no,
         model_id: request.model_id,
         enabled: request.enabled,
         polling_interval_ms: request.polling_interval_ms,
@@ -581,6 +616,7 @@ pub async fn create_device_with_tags(
         read_only: tag.read_only,
         enabled: tag.enabled,
         schedule_group_id: tag.schedule_group_id,
+        agg_to_field: tag.agg_to_field,
     }).collect();
 
     if let Err(e) = state.database.create_device_tags(&request.id, &device_tags).await {
@@ -776,19 +812,38 @@ pub async fn update_device_with_tags(
 ) -> Result<Json<ApiResponse<String>>, StatusCode> {
     let now = chrono::Utc::now();
 
-    // Update device instance
+    // Get existing device to preserve tb_device_id and tb_group_id
+    let existing_device = match state.database.get_device(&device_id).await {
+        Ok(Some(device)) => device,
+        Ok(None) => {
+            error!("Device not found: {}", device_id);
+            return Ok(Json(ApiResponse::error(format!("Device not found: {}", device_id))));
+        }
+        Err(e) => {
+            error!("Failed to get existing device: {}", e);
+            return Err(StatusCode::INTERNAL_SERVER_ERROR);
+        }
+    };
+
+    // Check if serial number changed BEFORE moving values
+    let serial_number_changed = existing_device.serial_no != request.serial_no;
+    let tb_device_id_clone = existing_device.tb_device_id.clone();
+    let tb_group_id_clone = existing_device.tb_group_id.clone();
+
+    // Update device instance - preserve tb_device_id and tb_group_id from existing device
     let device = DeviceInstance {
         id: device_id.clone(),
         name: request.name,
+        serial_no: request.serial_no,
         model_id: request.model_id,
         enabled: request.enabled,
         polling_interval_ms: request.polling_interval_ms,
         timeout_ms: request.timeout_ms,
         retry_count: request.retry_count,
         protocol_config: serde_json::to_string(&request.protocol_config).unwrap_or_default(),
-        tb_device_id: None,
-        tb_group_id: None,
-        created_at: now, // This will be ignored in update
+        tb_device_id: existing_device.tb_device_id,  // Preserve existing ThingsBoard ID
+        tb_group_id: existing_device.tb_group_id,    // Preserve existing ThingsBoard group
+        created_at: existing_device.created_at,      // Preserve creation time
         updated_at: now,
     };
 
@@ -796,6 +851,81 @@ pub async fn update_device_with_tags(
     if let Err(e) = state.database.update_device(&device).await {
         error!("Failed to update device: {}", e);
         return Err(StatusCode::INTERNAL_SERVER_ERROR);
+    }
+
+    // Check if serial number changed and device is synced to ThingsBoard
+    if serial_number_changed && tb_device_id_clone.is_some() {
+        info!("Serial number changed for synced device {}, updating ThingsBoard attributes", device_id);
+        
+        // Get device type from database to determine which attributes to update
+        match state.database.get_device_ava_type(&device_id).await {
+            Ok(Some(device_type)) => {
+                // Only update attributes for Inverter and Meter devices
+                if device_type == "Inverter" || device_type == "Meter" || device_type == "PowerMeter" {
+                    // Get entity group name from tb_group_id
+                    if let Some(tb_group_id) = &tb_group_id_clone {
+                        // Connect to ThingsBoard
+                        use crate::tb_rust_client::ThingsBoardClient;
+                        let base_url = "https://monitoring.avaasia.co".to_string();
+                        let mut tb_client = ThingsBoardClient::new(&base_url);
+                        
+                        match tb_client.login("jaydenyong28@gmail.com", "lalala88").await {
+                            Ok(()) => {
+                                // Get entity group name and TB device name
+                                match tb_client.get_all_entity_groups("DEVICE").await {
+                                    Ok(groups) => {
+                                        if let Some(group) = groups.iter().find(|g| &g.id.id == tb_group_id) {
+                                            let entity_group_name = &group.name;
+                                            
+                                            // Fetch ThingsBoard device to get its name
+                                            if let Some(tb_device_id) = &tb_device_id_clone {
+                                                match tb_client.get_device_by_id(tb_device_id).await {
+                                                    Ok(tb_device) => {
+                                                        let tb_device_name = &tb_device.name;
+                                                        
+                                                        // Build and update attributes using TB device name
+                                                        match tb_client.build_device_attributes(&device, tb_device_name, &device_type, entity_group_name, &state.database).await {
+                                                            Ok(attributes) => {
+                                                                match tb_client.update_device_attributes(tb_device_id, attributes).await {
+                                                                    Ok(_) => {
+                                                                        info!("✅ Successfully updated ThingsBoard attributes for device {}", device_id);
+                                                                    }
+                                                                    Err(e) => {
+                                                                        warn!("⚠️ Failed to update ThingsBoard attributes for device {}: {}", device_id, e);
+                                                                    }
+                                                                }
+                                                            }
+                                                            Err(e) => {
+                                                                warn!("⚠️ Failed to build attributes for device {}: {}", device_id, e);
+                                                            }
+                                                        }
+                                                    }
+                                                    Err(e) => {
+                                                        warn!("⚠️ Failed to fetch ThingsBoard device {}: {}", tb_device_id, e);
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                    Err(e) => {
+                                        warn!("⚠️ Failed to get entity groups for attribute update: {}", e);
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                warn!("⚠️ Failed to login to ThingsBoard for attribute update: {}", e);
+                            }
+                        }
+                    }
+                }
+            }
+            Ok(None) => {
+                warn!("Device type not found for {}", device_id);
+            }
+            Err(e) => {
+                warn!("Failed to get device type for {}: {}", device_id, e);
+            }
+        }
     }
 
     // Delete existing tags and recreate them
@@ -819,6 +949,7 @@ pub async fn update_device_with_tags(
         read_only: tag.read_only,
         enabled: tag.enabled,
         schedule_group_id: tag.schedule_group_id,
+        agg_to_field: tag.agg_to_field,
     }).collect();
 
     if let Err(e) = state.database.create_device_tags(&device_id, &device_tags).await {
@@ -1399,6 +1530,31 @@ pub async fn sync_devices_to_thingsboard(
                         info!("Successfully created device: {} [{}] (TB ID: {})", 
                               create_request.name, create_request.device_type, tb_device_id);
                         
+                        // Step 2.5: Update device attributes for Inverter and Meter devices
+                        if tb_device_id != "Unknown" && (create_request.device_type == "Inverter" || create_request.device_type == "Meter" || create_request.device_type == "PowerMeter") {
+                            info!("Updating attributes for {} device: {}", create_request.device_type, create_request.name);
+                            
+                            // Use the ThingsBoard device name from created_device
+                            let tb_device_name = &created_device.name;
+                            
+                            match tb_client.build_device_attributes(device, tb_device_name, &create_request.device_type, &entity_group_name, &state.database).await {
+                                Ok(attributes) => {
+                                    match tb_client.update_device_attributes(&tb_device_id, attributes).await {
+                                        Ok(_) => {
+                                            info!("✅ Successfully updated attributes for device: {}", create_request.name);
+                                        }
+                                        Err(e) => {
+                                            warn!("⚠️ Failed to update attributes for device {}: {}", create_request.name, e);
+                                            // Don't fail the sync, just log the warning
+                                        }
+                                    }
+                                }
+                                Err(e) => {
+                                    warn!("⚠️ Failed to build attributes for device {}: {}", create_request.name, e);
+                                }
+                            }
+                        }
+                        
                         // Create hierarchical devices (MPPT and String devices) only for Inverters
                         if tb_device_id != "Unknown" && create_request.device_type == "Inverter" {
                             match tb_client.sync_device_hierarchy_to_thingsboard(
@@ -1495,6 +1651,12 @@ pub async fn sync_devices_to_thingsboard(
             info!("Sync completed. Total: {}, Created: {}, Failed: {}, ID Updates: {}, Update Failures: {}", 
                   response.total_devices, response.created_count, response.failed_count,
                   response.updated_device_ids.len(), response.update_failed_count);
+            
+            // Update plant sync timestamp after successful sync
+            if let Err(e) = state.database.update_plant_sync_timestamp(&entity_group_name, &request.entity_group_id).await {
+                warn!("Failed to update plant sync timestamp: {}", e);
+                // Don't fail the entire sync operation if timestamp update fails
+            }
             
             Ok(Json(ApiResponse::success(response)))
         }
@@ -1680,4 +1842,275 @@ pub async fn delete_catalog_file(Path(filename): Path<String>) -> Result<Json<Ap
             Ok(Json(ApiResponse::error(format!("Failed to delete file: {}", e))))
         }
     }
+}
+
+// Authentication endpoints
+
+/// Login endpoint - validates credentials and creates session
+pub async fn login(
+    State(state): State<AppState>,
+    Json(request): Json<LoginRequest>,
+) -> Result<Json<ApiResponse<LoginResponse>>, StatusCode> {
+    // Verify user credentials
+    match state.database.verify_user(&request.username, &request.password).await {
+        Ok(Some(user)) => {
+            // Generate session token
+            let session_token = Uuid::new_v4().to_string();
+            let expires_at = Utc::now() + Duration::hours(24); // 24-hour sessions
+            
+            // Create session in database
+            match state.database.create_session(user.id.unwrap(), &session_token, expires_at).await {
+                Ok(_) => {
+                    info!("User '{}' logged in successfully", user.username);
+                    
+                    let response = LoginResponse {
+                        session_token,
+                        user: UserInfo {
+                            id: user.id.unwrap(),
+                            username: user.username,
+                            role: user.role,
+                        },
+                        expires_at,
+                    };
+                    
+                    Ok(Json(ApiResponse::success(response)))
+                }
+                Err(e) => {
+                    error!("Failed to create session: {}", e);
+                    Ok(Json(ApiResponse::error("Failed to create session".to_string())))
+                }
+            }
+        }
+        Ok(None) => {
+            warn!("Invalid login attempt for username: {}", request.username);
+            Ok(Json(ApiResponse::error("Invalid username or password".to_string())))
+        }
+        Err(e) => {
+            error!("Database error during login: {}", e);
+            Ok(Json(ApiResponse::error("Internal server error".to_string())))
+        }
+    }
+}
+
+/// Logout endpoint - revokes session
+pub async fn logout(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Json<ApiResponse<String>>, StatusCode> {
+    if let Some(auth_header) = headers.get("Authorization") {
+        if let Ok(auth_str) = auth_header.to_str() {
+            if let Some(token) = auth_str.strip_prefix("Bearer ") {
+                match state.database.revoke_session(token).await {
+                    Ok(true) => {
+                        info!("Session revoked successfully");
+                        Ok(Json(ApiResponse::success("Logged out successfully".to_string())))
+                    }
+                    Ok(false) => {
+                        Ok(Json(ApiResponse::error("Session not found".to_string())))
+                    }
+                    Err(e) => {
+                        error!("Failed to revoke session: {}", e);
+                        Ok(Json(ApiResponse::error("Failed to logout".to_string())))
+                    }
+                }
+            } else {
+                Ok(Json(ApiResponse::error("Invalid authorization header format".to_string())))
+            }
+        } else {
+            Ok(Json(ApiResponse::error("Invalid authorization header".to_string())))
+        }
+    } else {
+        Ok(Json(ApiResponse::error("No authorization header provided".to_string())))
+    }
+}
+
+/// Verify session endpoint - checks if session is valid
+pub async fn verify_session(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Json<ApiResponse<UserInfo>>, StatusCode> {
+    if let Some(auth_header) = headers.get("Authorization") {
+        if let Ok(auth_str) = auth_header.to_str() {
+            if let Some(token) = auth_str.strip_prefix("Bearer ") {
+                match state.database.verify_session(token).await {
+                    Ok(Some(user)) => {
+                        Ok(Json(ApiResponse::success(UserInfo {
+                            id: user.id.unwrap(),
+                            username: user.username,
+                            role: user.role,
+                        })))
+                    }
+                    Ok(None) => {
+                        Ok(Json(ApiResponse::error("Invalid or expired session".to_string())))
+                    }
+                    Err(e) => {
+                        error!("Database error during session verification: {}", e);
+                        Ok(Json(ApiResponse::error("Internal server error".to_string())))
+                    }
+                }
+            } else {
+                Ok(Json(ApiResponse::error("Invalid authorization header format".to_string())))
+            }
+        } else {
+            Ok(Json(ApiResponse::error("Invalid authorization header".to_string())))
+        }
+    } else {
+        Ok(Json(ApiResponse::error("No authorization header provided".to_string())))
+    }
+}
+
+/// Get plant configuration
+pub async fn get_plant_config(
+    State(state): State<AppState>,
+) -> Result<Json<ApiResponse<PlantConfiguration>>, StatusCode> {
+    match state.database.get_plant_configuration().await {
+        Ok(Some(config)) => Ok(Json(ApiResponse::success(config))),
+        Ok(None) => Ok(Json(ApiResponse::error("No plant configuration found".to_string()))),
+        Err(e) => {
+            error!("Failed to get plant configuration: {}", e);
+            Ok(Json(ApiResponse::error("Failed to get plant configuration".to_string())))
+        }
+    }
+}
+
+/// Update plant configuration
+pub async fn update_plant_config(
+    State(state): State<AppState>,
+    Json(request): Json<PlantConfigRequest>,
+) -> Result<Json<ApiResponse<String>>, StatusCode> {
+    match state.database.update_plant_configuration(&request.plant_name, request.thingsboard_entity_group_id.as_deref()).await {
+        Ok(_) => {
+            info!("Plant configuration updated: {}", request.plant_name);
+            Ok(Json(ApiResponse::success("Plant configuration updated successfully".to_string())))
+        }
+        Err(e) => {
+            error!("Failed to update plant configuration: {}", e);
+            Ok(Json(ApiResponse::error("Failed to update plant configuration".to_string())))
+        }
+    }
+}
+
+/// Get all plant sync information (for admin view)
+pub async fn get_all_plant_sync_info(
+    State(state): State<AppState>,
+) -> Result<Json<ApiResponse<Vec<PlantConfiguration>>>, StatusCode> {
+    match state.database.get_all_plant_sync_info().await {
+        Ok(plants) => Ok(Json(ApiResponse::success(plants))),
+        Err(e) => {
+            error!("Failed to get plant sync info: {}", e);
+            Ok(Json(ApiResponse::error("Failed to get plant sync info".to_string())))
+        }
+    }
+}
+
+/// Get devices filtered by plant configuration
+pub async fn get_devices_filtered(
+    State(state): State<AppState>,
+) -> Result<Json<ApiResponse<Vec<DeviceWithTags>>>, StatusCode> {
+    // Get plant configuration to determine filtering
+    let plant_config = match state.database.get_plant_configuration().await {
+        Ok(Some(config)) => config,
+        Ok(None) => {
+            // No plant config exists - return error for installers
+            return Ok(Json(ApiResponse::error("Plant configuration not found. Please contact your administrator.".to_string())));
+        }
+        Err(e) => {
+            error!("Failed to get plant configuration: {}", e);
+            return Ok(Json(ApiResponse::error("Failed to get plant configuration".to_string())));
+        }
+    };
+
+    // Check if plant is properly configured (not default)
+    if plant_config.plant_name == "Default Plant" || plant_config.thingsboard_entity_group_id.is_none() {
+        return Ok(Json(ApiResponse::error("Plant has not been configured yet. Please contact your administrator to configure the plant settings.".to_string())));
+    }
+
+    // If ThingsBoard group ID is configured, filter devices by that group
+    if let Some(tb_group_id) = &plant_config.thingsboard_entity_group_id {
+        // Get devices that belong to this specific ThingsBoard group
+        let devices = match state.database.get_devices_by_group_id(tb_group_id).await {
+            Ok(devices) => devices,
+            Err(e) => {
+                error!("Failed to get devices for plant group {}: {}", tb_group_id, e);
+                return Ok(Json(ApiResponse::error("Failed to get devices for plant group".to_string())));
+            }
+        };
+
+        let mut devices_with_tags = Vec::new();
+        for device in devices {
+            let tags = match state.database.get_device_tags(&device.id).await {
+                Ok(tags) => tags,
+                Err(e) => {
+                    error!("Failed to get tags for device {}: {}", device.id, e);
+                    continue; // Skip this device but continue with others
+                }
+            };
+
+            // Get device status from database
+            let device_status = state.database.get_device_status(&device.id).await.ok().flatten();
+            let status = device_status.as_ref().map(|s| s.status.clone());
+            let last_update = device_status.as_ref().map(|s| s.last_update.to_rfc3339());
+            
+            // Check if device is currently running
+            let is_running = state.logging_service.is_device_running(&device.id).await;
+
+            devices_with_tags.push(DeviceWithTags {
+                device,
+                tags,
+                status,
+                is_running,
+                last_update,
+            });
+        }
+
+        Ok(Json(ApiResponse::success(devices_with_tags)))
+    } else {
+        // No filtering configured, return error
+        Ok(Json(ApiResponse::error("Plant ThingsBoard group not configured. Please contact your administrator.".to_string())))
+    }
+}
+
+/// Authentication middleware
+pub async fn auth_middleware(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    mut request: Request,
+    next: Next,
+) -> Result<Response, StatusCode> {
+    // Skip authentication for login, health check, static files, and HTML pages
+    let path = request.uri().path();
+    if path == "/api/login" 
+        || path == "/api/health" 
+        || path.starts_with("/static/") 
+        || path.starts_with("/web/")
+        || path == "/" 
+        || path == "/favicon.ico"
+        || path == "/manifest.json"
+        || !path.starts_with("/api/") // Allow non-API routes (React app routes)
+    {
+        return Ok(next.run(request).await);
+    }
+    
+    // Check for authorization header
+    if let Some(auth_header) = headers.get("Authorization") {
+        if let Ok(auth_str) = auth_header.to_str() {
+            if let Some(token) = auth_str.strip_prefix("Bearer ") {
+                match state.database.verify_session(token).await {
+                    Ok(Some(user)) => {
+                        // Add user info to request extensions for use in handlers
+                        request.extensions_mut().insert(user);
+                        return Ok(next.run(request).await);
+                    }
+                    Ok(None) => {
+                        return Err(StatusCode::UNAUTHORIZED);
+                    }
+                    Err(_) => {
+                        return Err(StatusCode::INTERNAL_SERVER_ERROR);
+                    }
+                }
+            }
+        }
+    }
+    
+    Err(StatusCode::UNAUTHORIZED)
 }

@@ -2,6 +2,7 @@ use axum::{
     response::{Html, IntoResponse},
     routing::{get, post},
     Router,
+    middleware,
     // http::Uri,
 };
 use socketioxide::SocketIo;
@@ -157,6 +158,15 @@ async fn main() -> anyhow::Result<()> {
 
     // Create router
     let app = Router::new()
+        // Authentication routes (no auth required)
+        .route("/api/login", post(api::login))
+        .route("/api/logout", post(api::logout))
+        .route("/api/verify-session", get(api::verify_session))
+        
+        // Plant configuration routes
+        .route("/api/plant-config", get(api::get_plant_config).post(api::update_plant_config))
+        .route("/api/plant-sync-info", get(api::get_all_plant_sync_info))
+        
         // API routes
         .route("/api/config", get(api::get_config).post(api::update_config))
         .route("/api/devices", get(api::get_devices).post(api::create_device))
@@ -174,6 +184,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/device-models/:id/delete", post(api::delete_device_model))
         .route("/api/device-models/:id/tags", get(api::get_tag_templates))
         .route("/api/devices-enhanced", get(api::get_devices_enhanced).post(api::create_device_with_tags))
+        .route("/api/devices-filtered", get(api::get_devices_filtered))
         .route("/api/devices-enhanced/:id", get(api::get_device_enhanced).put(api::update_device_with_tags).delete(api::delete_device))
         .route("/api/devices/:id/tags", get(api::get_device_tags_api))
         
@@ -210,6 +221,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/health", get(crate::api::health_check))
         
         // Add middleware
+        .layer(middleware::from_fn_with_state(app_state.clone(), api::auth_middleware))
         .layer(CorsLayer::permissive())
         .layer(socket_layer)
         .with_state(app_state);

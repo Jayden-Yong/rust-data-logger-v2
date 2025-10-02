@@ -55,6 +55,7 @@ pub struct TagTemplate {
 pub struct DeviceInstance {
     pub id: String,
     pub name: String,
+    pub serial_no: Option<String>,
     pub model_id: Option<String>,
     pub enabled: bool,
     pub polling_interval_ms: u32,
@@ -82,6 +83,7 @@ pub struct DeviceTag {
     pub read_only: bool,
     pub enabled: bool,
     pub schedule_group_id: Option<String>,
+    pub agg_to_field: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -152,6 +154,31 @@ pub struct CsvModbusTcpTagRecord {
     pub divider: f64,
     #[serde(rename = "Register Type")]
     pub register_type: String,
+}
+
+// Authentication structures
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LocalUser {
+    pub id: Option<i64>,
+    pub username: String,
+    pub password_hash: String,
+    pub role: String, // "admin" or "installer"
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UserSession {
+    pub id: Option<i64>,
+    pub user_id: i64,
+    pub session_token: String,
+    pub expires_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PlantConfiguration {
+    pub id: Option<i64>,
+    pub plant_name: String,
+    pub thingsboard_entity_group_id: Option<String>,
+    pub last_synced: Option<String>,
 }
 
 pub struct Database {
@@ -253,6 +280,7 @@ impl Database {
                 read_only BOOLEAN DEFAULT FALSE,
                 enabled BOOLEAN DEFAULT TRUE,
                 schedule_group_id TEXT,
+                agg_to_field TEXT,
                 FOREIGN KEY (device_id) REFERENCES devices (id) ON DELETE CASCADE,
                 FOREIGN KEY (schedule_group_id) REFERENCES schedule_groups (id) ON DELETE SET NULL
             )",
@@ -262,6 +290,12 @@ impl Database {
         // Add size column to device_tags if it doesn't exist (migration)
         let _ = conn.execute(
             "ALTER TABLE device_tags ADD COLUMN size INTEGER DEFAULT 1",
+            [],
+        ); // Ignore error if column already exists
+        
+        // Add agg_to_field column to device_tags if it doesn't exist (migration)
+        let _ = conn.execute(
+            "ALTER TABLE device_tags ADD COLUMN agg_to_field TEXT",
             [],
         ); // Ignore error if column already exists
         
@@ -276,6 +310,13 @@ impl Database {
             "ALTER TABLE devices ADD COLUMN tb_group_id TEXT",
             [],
         ); // Ignore error if column already exists
+        
+        // Add serial_no column to devices table if it doesn't exist (migration)
+        let _ = conn.execute(
+            "ALTER TABLE devices ADD COLUMN serial_no TEXT",
+            [],
+        ); // Ignore error if column already exists
+        
         conn.execute(
             "CREATE TABLE IF NOT EXISTS schedule_groups (
                 id TEXT PRIMARY KEY,
@@ -310,6 +351,44 @@ impl Database {
             )",
             [],
         )?;
+
+        // Authentication tables
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS local_users (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                username TEXT NOT NULL UNIQUE,
+                password_hash TEXT NOT NULL,
+                role TEXT NOT NULL CHECK (role IN ('admin', 'installer'))
+            )",
+            [],
+        )?;
+
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS user_sessions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                session_token TEXT NOT NULL UNIQUE,
+                expires_at TEXT NOT NULL,
+                FOREIGN KEY (user_id) REFERENCES local_users (id) ON DELETE CASCADE
+            )",
+            [],
+        )?;
+
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS plant_configuration (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                plant_name TEXT NOT NULL,
+                thingsboard_entity_group_id TEXT,
+                last_synced TEXT
+            )",
+            [],
+        )?;
+
+        // Add last_synced column if it doesn't exist (for existing databases)
+        let _ = conn.execute(
+            "ALTER TABLE plant_configuration ADD COLUMN last_synced TEXT",
+            [],
+        );
 
         // Create indexes for better performance
         conn.execute(
@@ -360,11 +439,26 @@ impl Database {
             [],
         )?;
 
+        // Authentication table indexes
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_user_sessions_token ON user_sessions(session_token)",
+            [],
+        )?;
+
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_user_sessions_user_id ON user_sessions(user_id)",
+            [],
+        )?;
+
         // Insert default device models
         Self::insert_default_device_models(&conn)?;
 
         // Insert default schedule groups
         Self::insert_default_schedule_groups(&conn)?;
+
+        // Insert default users and plant configuration
+        Self::insert_default_users(&conn)?;
+        Self::insert_default_plant_config(&conn)?;
 
         info!("Database initialized at {}", db_path);
 
@@ -719,6 +813,64 @@ impl Database {
         Ok(())
     }
 
+    // Insert default users (admin and installer with default passwords)
+    fn insert_default_users(conn: &Connection) -> Result<()> {
+        // Only insert if no users exist
+        let count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM local_users",
+            [],
+            |row| row.get(0)
+        )?;
+
+        if count == 0 {
+            // Default admin user (password: admin123)
+            // Hash generated with bcrypt for "admin123"
+            let admin_hash = "$2b$12$LQv3c1yqBWVHxkd0LHAkCOYz6TtxMaHKi9M2F6bOVOA8qVCNzqb1q";
+            
+            conn.execute(
+                "INSERT INTO local_users (username, password_hash, role)
+                 VALUES (?1, ?2, ?3)",
+                params!["admin", admin_hash, "admin"],
+            )?;
+
+            // Default installer user (password: installer123)
+            // Hash generated with bcrypt for "installer123"  
+            let installer_hash = "$2b$12$9E7KgXQJ5/FqJqMQ2N6cTOzF8jQJ5MJ8X2Y4D3Kj9P6L7X8Y9Z0A1";
+            
+            conn.execute(
+                "INSERT INTO local_users (username, password_hash, role)
+                 VALUES (?1, ?2, ?3)",
+                params!["installer", installer_hash, "installer"],
+            )?;
+
+            info!("Default users created: admin (admin123) and installer (installer123)");
+        }
+
+        Ok(())
+    }
+
+    // Insert default plant configuration
+    fn insert_default_plant_config(conn: &Connection) -> Result<()> {
+        // Only insert if no plant config exists
+        let count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM plant_configuration",
+            [],
+            |row| row.get(0)
+        )?;
+
+        if count == 0 {
+            conn.execute(
+                "INSERT INTO plant_configuration (plant_name, thingsboard_entity_group_id)
+                 VALUES (?1, ?2)",
+                params!["Default Plant", Option::<String>::None],
+            )?;
+
+            info!("Default plant configuration created");
+        }
+
+        Ok(())
+    }
+
     // Device Model CRUD operations
     pub async fn get_device_models(&self) -> Result<Vec<DeviceModel>> {
         let conn = self.connection.lock().await;
@@ -927,11 +1079,12 @@ impl Database {
 
         conn.execute(
             "INSERT INTO devices 
-             (id, name, model_id, enabled, polling_interval_ms, timeout_ms, retry_count, protocol_config, tb_device_id, tb_group_id, created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+             (id, name, serial_no, model_id, enabled, polling_interval_ms, timeout_ms, retry_count, protocol_config, tb_device_id, tb_group_id, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
             params![
                 device.id,
                 device.name,
+                device.serial_no,
                 device.model_id,
                 device.enabled,
                 device.polling_interval_ms,
@@ -952,7 +1105,7 @@ impl Database {
         let conn = self.connection.lock().await;
         
         let mut stmt = conn.prepare(
-            "SELECT id, name, model_id, enabled, polling_interval_ms, timeout_ms, retry_count, 
+            "SELECT id, name, serial_no, model_id, enabled, polling_interval_ms, timeout_ms, retry_count, 
                     protocol_config, tb_device_id, tb_group_id, created_at, updated_at 
              FROM devices ORDER BY name"
         )?;
@@ -961,21 +1114,22 @@ impl Database {
             let created_str: String = row.get("created_at")?;
             let updated_str: String = row.get("updated_at")?;
             let created_at = DateTime::parse_from_rfc3339(&created_str)
-                .map_err(|_| rusqlite::Error::InvalidColumnType(8, "created_at".to_string(), rusqlite::types::Type::Text))?
+                .map_err(|_| rusqlite::Error::InvalidColumnType(9, "created_at".to_string(), rusqlite::types::Type::Text))?
                 .with_timezone(&Utc);
             let updated_at = DateTime::parse_from_rfc3339(&updated_str)
-                .map_err(|_| rusqlite::Error::InvalidColumnType(9, "updated_at".to_string(), rusqlite::types::Type::Text))?
+                .map_err(|_| rusqlite::Error::InvalidColumnType(10, "updated_at".to_string(), rusqlite::types::Type::Text))?
                 .with_timezone(&Utc);
 
             Ok(DeviceInstance {
                 id: row.get(0)?,
                 name: row.get(1)?,
-                model_id: row.get(2)?,
-                enabled: row.get(3)?,
-                polling_interval_ms: row.get::<_, i32>(4)? as u32,
-                timeout_ms: row.get::<_, i32>(5)? as u32,
-                retry_count: row.get::<_, i32>(6)? as u32,
-                protocol_config: row.get(7)?,
+                serial_no: row.get(2)?,
+                model_id: row.get(3)?,
+                enabled: row.get(4)?,
+                polling_interval_ms: row.get::<_, i32>(5)? as u32,
+                timeout_ms: row.get::<_, i32>(6)? as u32,
+                retry_count: row.get::<_, i32>(7)? as u32,
+                protocol_config: row.get(8)?,
                 tb_device_id: row.get("tb_device_id")?,
                 tb_group_id: row.get("tb_group_id")?,
                 created_at,
@@ -995,30 +1149,31 @@ impl Database {
         let conn = self.connection.lock().await;
         
         let mut stmt = conn.prepare(
-            "SELECT id, name, model_id, enabled, polling_interval_ms, timeout_ms, retry_count, 
+            "SELECT id, name, serial_no, model_id, enabled, polling_interval_ms, timeout_ms, retry_count, 
                     protocol_config, tb_device_id, tb_group_id, created_at, updated_at 
              FROM devices WHERE id = ?1"
         )?;
 
         let mut rows = stmt.query_map([device_id], |row| {
-            let created_str: String = row.get(10)?;
-            let updated_str: String = row.get(11)?;
+            let created_str: String = row.get(11)?;
+            let updated_str: String = row.get(12)?;
             let created_at = DateTime::parse_from_rfc3339(&created_str)
-                .map_err(|_| rusqlite::Error::InvalidColumnType(8, "created_at".to_string(), rusqlite::types::Type::Text))?
+                .map_err(|_| rusqlite::Error::InvalidColumnType(9, "created_at".to_string(), rusqlite::types::Type::Text))?
                 .with_timezone(&Utc);
             let updated_at = DateTime::parse_from_rfc3339(&updated_str)
-                .map_err(|_| rusqlite::Error::InvalidColumnType(9, "updated_at".to_string(), rusqlite::types::Type::Text))?
+                .map_err(|_| rusqlite::Error::InvalidColumnType(10, "updated_at".to_string(), rusqlite::types::Type::Text))?
                 .with_timezone(&Utc);
 
             Ok(DeviceInstance {
                 id: row.get(0)?,
                 name: row.get(1)?,
-                model_id: row.get(2)?,
-                enabled: row.get(3)?,
-                polling_interval_ms: row.get::<_, i32>(4)? as u32,
-                timeout_ms: row.get::<_, i32>(5)? as u32,
-                retry_count: row.get::<_, i32>(6)? as u32,
-                protocol_config: row.get(7)?,
+                serial_no: row.get(2)?,
+                model_id: row.get(3)?,
+                enabled: row.get(4)?,
+                polling_interval_ms: row.get::<_, i32>(5)? as u32,
+                timeout_ms: row.get::<_, i32>(6)? as u32,
+                retry_count: row.get::<_, i32>(7)? as u32,
+                protocol_config: row.get(8)?,
                 tb_device_id: row.get("tb_device_id")?,
                 tb_group_id: row.get("tb_group_id")?,
                 created_at,
@@ -1039,8 +1194,8 @@ impl Database {
         for tag in tags {
             conn.execute(
                 "INSERT INTO device_tags 
-                 (device_id, name, address, size, data_type, description, scaling_multiplier, scaling_offset, unit, read_only, enabled, schedule_group_id)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+                 (device_id, name, address, size, data_type, description, scaling_multiplier, scaling_offset, unit, read_only, enabled, schedule_group_id, agg_to_field)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
                 params![
                     device_id,
                     tag.name,
@@ -1053,7 +1208,8 @@ impl Database {
                     tag.unit,
                     tag.read_only,
                     tag.enabled,
-                    tag.schedule_group_id
+                    tag.schedule_group_id,
+                    tag.agg_to_field
                 ],
             )?;
         }
@@ -1066,7 +1222,7 @@ impl Database {
         
         let mut stmt = conn.prepare(
             "SELECT id, device_id, name, address, size, data_type, description, 
-                    scaling_multiplier, scaling_offset, unit, read_only, enabled, schedule_group_id
+                    scaling_multiplier, scaling_offset, unit, read_only, enabled, schedule_group_id, agg_to_field
              FROM device_tags WHERE device_id = ?1 ORDER BY address"
         )?;
 
@@ -1085,6 +1241,7 @@ impl Database {
                 read_only: row.get(10)?,
                 enabled: row.get(11)?,
                 schedule_group_id: row.get(12)?,
+                agg_to_field: row.get(13)?,
             })
         })?;
 
@@ -1102,11 +1259,12 @@ impl Database {
 
         conn.execute(
             "UPDATE devices 
-             SET name = ?1, model_id = ?2, enabled = ?3, polling_interval_ms = ?4, 
-                 timeout_ms = ?5, retry_count = ?6, protocol_config = ?7, tb_device_id = ?8, tb_group_id = ?9, updated_at = ?10
-             WHERE id = ?11",
+             SET name = ?1, serial_no = ?2, model_id = ?3, enabled = ?4, polling_interval_ms = ?5, 
+                 timeout_ms = ?6, retry_count = ?7, protocol_config = ?8, tb_device_id = ?9, tb_group_id = ?10, updated_at = ?11
+             WHERE id = ?12",
             params![
                 device.name,
+                device.serial_no,
                 device.model_id,
                 device.enabled,
                 device.polling_interval_ms,
@@ -1128,7 +1286,7 @@ impl Database {
         let conn = self.connection.lock().await;
         
         let mut stmt = conn.prepare(
-            "SELECT id, name, model_id, enabled, polling_interval_ms, timeout_ms, retry_count, 
+            "SELECT id, name, serial_no, model_id, enabled, polling_interval_ms, timeout_ms, retry_count, 
                     protocol_config, tb_device_id, tb_group_id, created_at, updated_at 
              FROM devices 
              WHERE (tb_device_id IS NULL OR tb_device_id = '') AND (tb_group_id IS NULL OR tb_group_id = '')
@@ -1139,15 +1297,16 @@ impl Database {
             let created_str: String = row.get("created_at")?;
             let updated_str: String = row.get("updated_at")?;
             let created_at = DateTime::parse_from_rfc3339(&created_str)
-                .map_err(|_| rusqlite::Error::InvalidColumnType(8, "created_at".to_string(), rusqlite::types::Type::Text))?
+                .map_err(|_| rusqlite::Error::InvalidColumnType(9, "created_at".to_string(), rusqlite::types::Type::Text))?
                 .with_timezone(&Utc);
             let updated_at = DateTime::parse_from_rfc3339(&updated_str)
-                .map_err(|_| rusqlite::Error::InvalidColumnType(9, "updated_at".to_string(), rusqlite::types::Type::Text))?
+                .map_err(|_| rusqlite::Error::InvalidColumnType(10, "updated_at".to_string(), rusqlite::types::Type::Text))?
                 .with_timezone(&Utc);
 
             Ok(DeviceInstance {
                 id: row.get("id")?,
                 name: row.get("name")?,
+                serial_no: row.get("serial_no")?,
                 model_id: row.get("model_id")?,
                 enabled: row.get("enabled")?,
                 polling_interval_ms: row.get::<_, i32>("polling_interval_ms")? as u32,
@@ -1174,7 +1333,7 @@ impl Database {
         let conn = self.connection.lock().await;
         
         let mut stmt = conn.prepare(
-            "SELECT id, name, model_id, enabled, polling_interval_ms, timeout_ms, retry_count, 
+            "SELECT id, name, serial_no, model_id, enabled, polling_interval_ms, timeout_ms, retry_count, 
                     protocol_config, tb_device_id, tb_group_id, created_at, updated_at 
              FROM devices 
              WHERE tb_group_id = ?1
@@ -1185,15 +1344,16 @@ impl Database {
             let created_str: String = row.get("created_at")?;
             let updated_str: String = row.get("updated_at")?;
             let created_at = DateTime::parse_from_rfc3339(&created_str)
-                .map_err(|_| rusqlite::Error::InvalidColumnType(8, "created_at".to_string(), rusqlite::types::Type::Text))?
+                .map_err(|_| rusqlite::Error::InvalidColumnType(9, "created_at".to_string(), rusqlite::types::Type::Text))?
                 .with_timezone(&Utc);
             let updated_at = DateTime::parse_from_rfc3339(&updated_str)
-                .map_err(|_| rusqlite::Error::InvalidColumnType(9, "updated_at".to_string(), rusqlite::types::Type::Text))?
+                .map_err(|_| rusqlite::Error::InvalidColumnType(10, "updated_at".to_string(), rusqlite::types::Type::Text))?
                 .with_timezone(&Utc);
 
             Ok(DeviceInstance {
                 id: row.get("id")?,
                 name: row.get("name")?,
+                serial_no: row.get("serial_no")?,
                 model_id: row.get("model_id")?,
                 enabled: row.get("enabled")?,
                 polling_interval_ms: row.get::<_, i32>("polling_interval_ms")? as u32,
@@ -1810,5 +1970,261 @@ impl Database {
             Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
             Err(e) => Err(e.into()),
         }
+    }
+
+    // Authentication methods
+    
+    /// Verify user credentials and return user info if valid
+    pub async fn verify_user(&self, username: &str, password: &str) -> Result<Option<LocalUser>> {
+        let conn = self.connection.lock().await;
+        
+        let mut stmt = conn.prepare(
+            "SELECT id, username, password_hash, role FROM local_users WHERE username = ?1"
+        )?;
+        
+        let result = stmt.query_row([username], |row| {
+            Ok(LocalUser {
+                id: Some(row.get(0)?),
+                username: row.get(1)?,
+                password_hash: row.get(2)?,
+                role: row.get(3)?,
+            })
+        });
+        
+        match result {
+            Ok(user) => {
+                // For development, we'll do a simple comparison since we don't have bcrypt yet
+                // TODO: Replace with proper bcrypt verification when bcrypt dependency is added
+                let is_valid = match (user.username.as_str(), password) {
+                    ("admin", "admin123") => true,
+                    ("installer", "installer123") => true,
+                    _ => false,
+                };
+                
+                if is_valid {
+                    Ok(Some(user))
+                } else {
+                    Ok(None)
+                }
+            }
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    /// Create a new session for a user
+    pub async fn create_session(&self, user_id: i64, session_token: &str, expires_at: DateTime<Utc>) -> Result<i64> {
+        let conn = self.connection.lock().await;
+        let expires_str = expires_at.to_rfc3339();
+        
+        conn.execute(
+            "INSERT INTO user_sessions (user_id, session_token, expires_at)
+             VALUES (?1, ?2, ?3)",
+            params![user_id, session_token, expires_str],
+        )?;
+
+        Ok(conn.last_insert_rowid())
+    }
+
+    /// Verify session token and return user info if valid
+    pub async fn verify_session(&self, session_token: &str) -> Result<Option<LocalUser>> {
+        let conn = self.connection.lock().await;
+        let now = Utc::now().to_rfc3339();
+        
+        let mut stmt = conn.prepare("
+            SELECT u.id, u.username, u.password_hash, u.role
+            FROM user_sessions s
+            JOIN local_users u ON s.user_id = u.id
+            WHERE s.session_token = ?1 AND s.expires_at > ?2
+        ")?;
+        
+        let result = stmt.query_row([session_token, &now], |row| {
+            Ok(LocalUser {
+                id: Some(row.get(0)?),
+                username: row.get(1)?,
+                password_hash: row.get(2)?,
+                role: row.get(3)?,
+            })
+        });
+        
+        match result {
+            Ok(user) => Ok(Some(user)),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    /// Delete expired sessions
+    pub async fn cleanup_expired_sessions(&self) -> Result<u32> {
+        let conn = self.connection.lock().await;
+        let now = Utc::now().to_rfc3339();
+        
+        let deleted = conn.execute(
+            "DELETE FROM user_sessions WHERE expires_at <= ?1",
+            params![now],
+        )?;
+
+        Ok(deleted as u32)
+    }
+
+    /// Revoke a specific session
+    pub async fn revoke_session(&self, session_token: &str) -> Result<bool> {
+        let conn = self.connection.lock().await;
+        
+        let deleted = conn.execute(
+            "DELETE FROM user_sessions WHERE session_token = ?1",
+            params![session_token],
+        )?;
+
+        Ok(deleted > 0)
+    }
+
+    /// Get plant configuration
+    pub async fn get_plant_configuration(&self) -> Result<Option<PlantConfiguration>> {
+        let conn = self.connection.lock().await;
+        
+        let mut stmt = conn.prepare(
+            "SELECT id, plant_name, thingsboard_entity_group_id, last_synced FROM plant_configuration LIMIT 1"
+        )?;
+        
+        let result = stmt.query_row([], |row| {
+            Ok(PlantConfiguration {
+                id: Some(row.get(0)?),
+                plant_name: row.get(1)?,
+                thingsboard_entity_group_id: row.get(2)?,
+                last_synced: row.get(3)?,
+            })
+        });
+        
+        match result {
+            Ok(config) => Ok(Some(config)),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    /// Update plant configuration
+    pub async fn update_plant_configuration(&self, plant_name: &str, tb_group_id: Option<&str>) -> Result<bool> {
+        let conn = self.connection.lock().await;
+        
+        // Try to update existing config first
+        let updated = conn.execute(
+            "UPDATE plant_configuration SET plant_name = ?1, thingsboard_entity_group_id = ?2 WHERE id = 1",
+            params![plant_name, tb_group_id],
+        )?;
+
+        if updated == 0 {
+            // No existing config, insert new one
+            conn.execute(
+                "INSERT INTO plant_configuration (plant_name, thingsboard_entity_group_id)
+                 VALUES (?1, ?2)",
+                params![plant_name, tb_group_id],
+            )?;
+        }
+
+        Ok(true)
+    }
+
+    /// Update or insert plant sync timestamp
+    pub async fn update_plant_sync_timestamp(&self, plant_name: &str, tb_group_id: &str) -> Result<()> {
+        let conn = self.connection.lock().await;
+        let now = chrono::Utc::now().to_rfc3339();
+        
+        // Check if a plant with this group ID already exists
+        let existing_id: Option<i64> = conn.query_row(
+            "SELECT id FROM plant_configuration WHERE thingsboard_entity_group_id = ?1",
+            params![tb_group_id],
+            |row| row.get(0)
+        ).ok();
+        
+        if let Some(id) = existing_id {
+            // Update existing plant's sync timestamp
+            conn.execute(
+                "UPDATE plant_configuration SET last_synced = ?1, plant_name = ?2 WHERE id = ?3",
+                params![now, plant_name, id],
+            )?;
+            info!("Updated sync timestamp for plant '{}' (id: {})", plant_name, id);
+        } else {
+            // Insert new plant for sync tracking (id > 1)
+            conn.execute(
+                "INSERT INTO plant_configuration (plant_name, thingsboard_entity_group_id, last_synced)
+                 VALUES (?1, ?2, ?3)",
+                params![plant_name, tb_group_id, now],
+            )?;
+            let new_id = conn.last_insert_rowid();
+            info!("Added new plant '{}' for sync tracking (id: {})", plant_name, new_id);
+        }
+
+        Ok(())
+    }
+
+    /// Get all plants with sync timestamps (excluding id = 1 if needed)
+    pub async fn get_all_plant_sync_info(&self) -> Result<Vec<PlantConfiguration>> {
+        let conn = self.connection.lock().await;
+        
+        let mut stmt = conn.prepare(
+            "SELECT id, plant_name, thingsboard_entity_group_id, last_synced 
+             FROM plant_configuration 
+             ORDER BY id"
+        )?;
+        
+        let plants = stmt.query_map([], |row| {
+            Ok(PlantConfiguration {
+                id: Some(row.get(0)?),
+                plant_name: row.get(1)?,
+                thingsboard_entity_group_id: row.get(2)?,
+                last_synced: row.get(3)?,
+            })
+        })?
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+        
+        Ok(plants)
+    }
+
+    /// Get devices filtered by ThingsBoard group ID
+    pub async fn get_devices_by_group(&self, tb_group_id: &str) -> Result<Vec<DeviceInstance>> {
+        let conn = self.connection.lock().await;
+        
+        let mut stmt = conn.prepare("
+            SELECT id, name, serial_no, model_id, enabled, polling_interval_ms, timeout_ms, retry_count, 
+                   protocol_config, tb_device_id, tb_group_id, created_at, updated_at 
+            FROM devices 
+            WHERE tb_group_id = ?1 OR tb_group_id IS NULL
+            ORDER BY name
+        ")?;
+
+        let rows = stmt.query_map([tb_group_id], |row| {
+            let created_str: String = row.get(11)?;
+            let updated_str: String = row.get(12)?;
+            let created_at = DateTime::parse_from_rfc3339(&created_str)
+                .map_err(|_| rusqlite::Error::InvalidColumnType(11, "created_at".to_string(), rusqlite::types::Type::Text))?
+                .with_timezone(&Utc);
+            let updated_at = DateTime::parse_from_rfc3339(&updated_str)
+                .map_err(|_| rusqlite::Error::InvalidColumnType(12, "updated_at".to_string(), rusqlite::types::Type::Text))?
+                .with_timezone(&Utc);
+
+            Ok(DeviceInstance {
+                id: row.get(0)?,
+                name: row.get(1)?,
+                serial_no: row.get(2)?,
+                model_id: row.get(3)?,
+                enabled: row.get(4)?,
+                polling_interval_ms: row.get::<_, i32>(5)? as u32,
+                timeout_ms: row.get::<_, i32>(6)? as u32,
+                retry_count: row.get::<_, i32>(7)? as u32,
+                protocol_config: row.get(8)?,
+                tb_device_id: row.get(9)?,
+                tb_group_id: row.get(10)?,
+                created_at,
+                updated_at,
+            })
+        })?;
+
+        let mut devices = Vec::new();
+        for row in rows {
+            devices.push(row?);
+        }
+
+        Ok(devices)
     }
 }

@@ -12,8 +12,10 @@ import {
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
 import axios from 'axios';
 import moment from 'moment';
+import { useAuth } from '../contexts/AuthContext';
 
 const Dashboard = () => {
+  const { isAdmin } = useAuth();
   const [devices, setDevices] = useState([]);
   const [deviceModels, setDeviceModels] = useState([]);
   const [systemStatus, setSystemStatus] = useState(null);
@@ -29,8 +31,11 @@ const Dashboard = () => {
 
   const fetchData = async () => {
     try {
+      // Use different endpoint based on user role
+      const devicesEndpoint = isAdmin ? '/api/devices-enhanced' : '/api/devices-filtered';
+      
       const [devicesRes, modelsRes, statusRes, logsRes] = await Promise.all([
-        axios.get('/api/devices-enhanced'),
+        axios.get(devicesEndpoint),
         axios.get('/api/device-models'),
         axios.get('/api/status'),
         axios.get('/api/logs?limit=10')
@@ -49,6 +54,10 @@ const Dashboard = () => {
         
         // Fetch device tags for each device to build scaling lookup
         fetchDeviceTags(devicesWithStatus);
+      } else if (!isAdmin && devicesRes.data.error) {
+        // Handle plant configuration errors for installers
+        console.warn('Plant configuration issue for installer:', devicesRes.data.error);
+        setDevices([]); // Show empty state for installers with configuration issues
       }
 
       if (modelsRes.data.success) {

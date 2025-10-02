@@ -953,6 +953,112 @@ impl ThingsBoardClient {
         }
     }
 
+    /// Update device attributes on ThingsBoard
+    /// POST /api/plugins/telemetry/{deviceId}/SERVER_SCOPE
+    /// Only uses SERVER_SCOPE for server-side attributes
+    pub async fn update_device_attributes(
+        &self,
+        device_id: &str,
+        attributes: serde_json::Value,
+    ) -> Result<(), TbError> {
+        let auth_header = self.get_auth_header()?;
+        
+        // Always use SERVER_SCOPE for attributes
+        let url = format!(
+            "{}/api/plugins/telemetry/{}/SERVER_SCOPE",
+            self.base_url, device_id
+        );
+        
+        println!("🔗 POST Request URL: {}", url);
+        println!("📝 Attributes payload: {}", serde_json::to_string_pretty(&attributes).unwrap_or_else(|_| "Failed to serialize".to_string()));
+        
+        let response = self
+            .client
+            .post(&url)
+            .header("Authorization", auth_header)
+            .json(&attributes)
+            .send()
+            .await?;
+        
+        let status_code = response.status();
+        println!("📊 ThingsBoard Attributes Response Status: {}", status_code);
+        
+        if response.status().is_success() {
+            println!("✨ Device attributes updated successfully");
+            Ok(())
+        } else {
+            let error_text = response.text().await.unwrap_or_else(|_| "Unknown error".to_string());
+            println!("❌ ThingsBoard API Error Response: {}", error_text);
+            Err(TbError::Api(format!(
+                "Update device attributes failed (Status: {}): {}",
+                status_code, error_text
+            )))
+        }
+    }
+
+    /// Build device attributes based on device type
+    /// This helper creates the appropriate attributes for Inverter and Meter devices
+    pub async fn build_device_attributes(
+        &self,
+        device: &DeviceInstance,
+        tb_device_name: &str,
+        device_type: &str,
+        entity_group_name: &str,
+        database: &Database,
+    ) -> Result<serde_json::Value, TbError> {
+        let mut attributes = serde_json::Map::new();
+        
+        // Common attributes for all device types
+        if let Some(serial_no) = &device.serial_no {
+            attributes.insert("SN".to_string(), serde_json::Value::String(serial_no.clone()));
+        }
+        
+        // Device type specific attributes
+        match device_type {
+            "Inverter" => {
+                // INV - inverter index (extract from ThingsBoard device name)
+                let inv_index = self.extract_inv_index_from_device_name(tb_device_name);
+                attributes.insert("INV".to_string(), serde_json::Value::Number(inv_index.into()));
+                
+                // Device Model - get from database
+                if let Some(model_id) = &device.model_id {
+                    if let Ok(Some(model_name)) = database.get_device_model_name(model_id).await {
+                        attributes.insert("Device Model".to_string(), serde_json::Value::String(model_name));
+                    }
+                }
+                
+                // Device Brand - get from database
+                if let Some(model_id) = &device.model_id {
+                    if let Ok(Some(model)) = database.get_device_model(model_id).await {
+                        if let Some(manufacturer) = model.manufacturer {
+                            attributes.insert("Device Brand".to_string(), serde_json::Value::String(manufacturer));
+                        }
+                    }
+                }
+                
+                // customer - extract from ThingsBoard device name (e.g., ACCV-P001-I01 -> ACCV)
+                let customer = self.extract_customer_from_group_name(tb_device_name);
+                attributes.insert("customer".to_string(), serde_json::Value::String(customer));
+                
+                // ava_name - the ThingsBoard device name itself
+                attributes.insert("ava_name".to_string(), serde_json::Value::String(tb_device_name.to_string()));
+            }
+            "Meter" | "PowerMeter" => {
+                // plant - the entity group name
+                attributes.insert("plant".to_string(), serde_json::Value::String(entity_group_name.to_string()));
+                
+                // ava_name - the ThingsBoard device name itself
+                attributes.insert("ava_name".to_string(), serde_json::Value::String(tb_device_name.to_string()));
+            }
+            _ => {
+                // For other device types, just add ava_name
+                attributes.insert("ava_name".to_string(), serde_json::Value::String(tb_device_name.to_string()));
+            }
+        }
+        
+        Ok(serde_json::Value::Object(attributes))
+    }
+
 
     // get devices of entity group - with pagination controlled by page size and page number
     pub async fn get_group_devices(&self, entity_group_id: &str, page_size: i32, page: i32) -> Result<GroupDevicesResponse, TbError> {
@@ -1206,30 +1312,32 @@ impl ThingsBoardClient {
         writer.write_record(&[
             "IOA",           // 1
             "Index",         // 2
-            "Device Name",   // 3
-            "Device Brand",  // 4
-            "Device Model",  // 5
-            "Customer",      // 6
-            "AVA Type",      // 7
-            "Token",         // 8
-            "Parent",        // 9
-            "Plant",         // 10
-            "INV",           // 11
-            "MPPT",          // 12
-            "INPUT",         // 13
-            "Label",         // 14
-            "Device ID",     // 15
-            "Host",          // 16
-            "Port",          // 17
-            "Forwarding Modbus ID", // 18
-            "Protocol",      // 19
-            "Data Label",    // 20
-            "Address",       // 21
-            "Size",          // 22
-            "Modbus Type",   // 23
-            "Divider",       // 24
-            "Register Type", // 25
-            "Frequency",     // 26
+            "Serial Number", // 3 ← NEW
+            "Device Name",   // 4
+            "Device Brand",  // 5
+            "Device Model",  // 6
+            "Customer",      // 7
+            "AVA Type",      // 8
+            "Token",         // 9
+            "Parent",        // 10
+            "Plant",         // 11
+            "INV",           // 12
+            "MPPT",          // 13
+            "INPUT",         // 14
+            "Label",         // 15
+            "Device ID",     // 16
+            "Host",          // 17
+            "Port",          // 18
+            "Forwarding Modbus ID", // 19
+            "Protocol",      // 20
+            "Data Label",    // 21
+            "Address",       // 22
+            "Size",          // 23
+            "Modbus Type",   // 24
+            "Divider",       // 25
+            "Register Type", // 26
+            "Frequency",     // 27
+            "Agg To Field",  // 28 ← NEW
         ]).map_err(|e| TbError::Api(format!("Failed to write CSV header: {}", e)))?;
 
         // get local database devices first to determine which devices to process
@@ -1499,6 +1607,7 @@ impl ThingsBoardClient {
                     writer.write_record(&[
                         &total_rows.to_string(),              // IOA (starting from 0)
                         &total_rows.to_string(),              // Index (starting from 0) 
+                        local_device.serial_no.as_deref().unwrap_or(""), // Serial Number ← NEW
                         &device.name,                         // Device Name
                         &device_brand,                        // Device Brand
                         &device_model,                        // Device Model
@@ -1523,6 +1632,7 @@ impl ThingsBoardClient {
                         "",                                  // Divider
                         "",                                  // Register Type
                         "",                                  // Frequency
+                        "",                                  // Agg To Field (empty for no tags) ← NEW
                     ]).map_err(|e| TbError::Api(format!("Failed to write device row: {}", e)))?;
                     *total_rows += 1;
                 } else {
@@ -1561,6 +1671,7 @@ impl ThingsBoardClient {
                         writer.write_record(&[
                             &total_rows.to_string(),              // IOA (starting from 0)
                             &total_rows.to_string(),              // Index (starting from 0)
+                            local_device.serial_no.as_deref().unwrap_or(""), // Serial Number ← NEW
                             &device.name,                         // Device Name
                             &device_brand,                        // Device Brand
                             &device_model,                        // Device Model
@@ -1585,6 +1696,7 @@ impl ThingsBoardClient {
                             &divider,                            // Divider
                             &tag.unit.as_ref().unwrap_or(&"".to_string()), // Register Type
                             &frequency,                          // Frequency
+                            &tag.agg_to_field.as_ref().unwrap_or(&"".to_string()), // Agg To Field ← NEW
                         ]).map_err(|e| TbError::Api(format!("Failed to write tag row: {}", e)))?;
                         *total_rows += 1;
                     }
@@ -1609,6 +1721,7 @@ impl ThingsBoardClient {
                 writer.write_record(&[
                     &total_rows.to_string(),              // IOA (starting from 0)
                     &total_rows.to_string(),              // Index (starting from 0)
+                    local_device.serial_no.as_deref().unwrap_or(""), // Serial Number ← NEW
                     &device.name,                         // Device Name
                     &device_brand,                        // Device Brand
                     &device_model,                        // Device Model
@@ -1633,6 +1746,7 @@ impl ThingsBoardClient {
                     "",                                  // Divider
                     "",                                  // Register Type
                     "",                                  // Frequency
+                    "",                                  // Agg To Field (empty for error) ← NEW
                 ]).map_err(|e| TbError::Api(format!("Failed to write error row: {}", e)))?;
                 *total_rows += 1;
             }
@@ -1682,6 +1796,7 @@ impl ThingsBoardClient {
                                     writer.write_record(&[
                                         &total_rows.to_string(),              // IOA
                                         &total_rows.to_string(),              // Index
+                                        parent_device.serial_no.as_deref().unwrap_or(""), // Serial Number (from parent) ← NEW
                                         &device.name,                         // Device Name
                                         &device_brand,                        // Device Brand
                                         &device_model,                        // Device Model
@@ -1706,6 +1821,7 @@ impl ThingsBoardClient {
                                         &divider,                            // Divider
                                         &tag.unit.as_ref().unwrap_or(&"".to_string()), // Register Type
                                         &frequency,                          // Frequency
+                                        &tag.agg_to_field.as_ref().unwrap_or(&"".to_string()), // Agg To Field ← NEW
                                     ]).map_err(|e| TbError::Api(format!("Failed to write MPPT row: {}", e)))?;
                                     *total_rows += 1;
                                 }
@@ -1752,6 +1868,7 @@ impl ThingsBoardClient {
                                     writer.write_record(&[
                                         &total_rows.to_string(),              // IOA
                                         &total_rows.to_string(),              // Index
+                                        parent_device.serial_no.as_deref().unwrap_or(""), // Serial Number (from parent) ← NEW
                                         &device.name,                         // Device Name
                                         &device_brand,                        // Device Brand
                                         &device_model,                        // Device Model
@@ -1776,6 +1893,7 @@ impl ThingsBoardClient {
                                         &divider,                            // Divider
                                         &tag.unit.as_ref().unwrap_or(&"".to_string()), // Register Type
                                         &frequency,                          // Frequency
+                                        &tag.agg_to_field.as_ref().unwrap_or(&"".to_string()), // Agg To Field ← NEW
                                     ]).map_err(|e| TbError::Api(format!("Failed to write String row: {}", e)))?;
                                     *total_rows += 1;
                                 }
@@ -1955,6 +2073,7 @@ impl ThingsBoardClient {
         writer.write_record(&[
             &total_rows.to_string(),              // IOA
             &total_rows.to_string(),              // Index
+            "",                                   // Serial Number (empty for placeholder) ← NEW
             &device.name,                         // Device Name
             "Unknown",                            // Device Brand
             "Unknown",                            // Device Model
@@ -1979,6 +2098,7 @@ impl ThingsBoardClient {
             "",                                  // Divider
             "",                                  // Register Type
             "",                                  // Frequency
+            "",                                  // Agg To Field (empty for placeholder) ← NEW
         ]).map_err(|e| TbError::Api(format!("Failed to write placeholder row: {}", e)))?;
         *total_rows += 1;
         Ok(())
@@ -2042,24 +2162,24 @@ impl ThingsBoardClient {
         }
     }
 
-    // pub async fn get_device_by_id(&self, device_id: &str) -> Result<Device, TbError> {
-    //     let auth_header = self.get_auth_header()?;
+    pub async fn get_device_by_id(&self, device_id: &str) -> Result<Device, TbError> {
+        let auth_header = self.get_auth_header()?;
 
-    //     let response = self
-    //         .client
-    //         .get(&format!("{}/api/device/{}", self.base_url, device_id))
-    //         .header("Authorization", auth_header)
-    //         .send()
-    //         .await?;
+        let response = self
+            .client
+            .get(&format!("{}/api/device/{}", self.base_url, device_id))
+            .header("Authorization", auth_header)
+            .send()
+            .await?;
 
-    //     if response.status().is_success() {
-    //         let device: Device = response.json().await?;
-    //         Ok(device)
-    //     } else {
-    //         let error_text = response.text().await.unwrap_or_else(|_| "Unknown error".to_string());
-    //         Err(TbError::Api(format!("Get device failed: {}", error_text)))
-    //     }
-    // }
+        if response.status().is_success() {
+            let device: Device = response.json().await?;
+            Ok(device)
+        } else {
+            let error_text = response.text().await.unwrap_or_else(|_| "Unknown error".to_string());
+            Err(TbError::Api(format!("Get device failed: {}", error_text)))
+        }
+    }
 
     // pub async fn get_device_credentials(&self, device_id: &str) -> Result<DeviceCredentials, TbError> {
     //     let auth_header = self.get_auth_header()?;
