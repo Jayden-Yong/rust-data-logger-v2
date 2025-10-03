@@ -1,11 +1,3 @@
-// Cargo.toml dependencies needed:
-// [dependencies]
-// reqwest = { version = "1.0", features = ["json"] }
-// serde = { version = "1.0", features = ["derive"] }
-// serde_json = "1.0"
-// tokio = { version = "1.0", features = ["full"] }
-// uuid = { version = "1.0", features = ["v4"] }
-
 use reqwest::{Client, Error as ReqwestError};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -2180,25 +2172,6 @@ impl ThingsBoardClient {
             Err(TbError::Api(format!("Get device failed: {}", error_text)))
         }
     }
-
-    // pub async fn get_device_credentials(&self, device_id: &str) -> Result<DeviceCredentials, TbError> {
-    //     let auth_header = self.get_auth_header()?;
-
-    //     let response = self
-    //         .client
-    //         .get(&format!("{}/api/device/{}/credentials", self.base_url, device_id))
-    //         .header("Authorization", auth_header)
-    //         .send()
-    //         .await?;
-
-    //     if response.status().is_success() {
-    //         let credentials: DeviceCredentials = response.json().await?;
-    //         Ok(credentials)
-    //     } else {
-    //         let error_text = response.text().await.unwrap_or_else(|_| "Unknown error".to_string());
-    //         Err(TbError::Api(format!("Get credentials failed: {}", error_text)))
-    //     }
-    // }
 
     pub async fn save_device_telemetry(
         &self,
